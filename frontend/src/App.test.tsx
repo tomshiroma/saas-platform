@@ -9,13 +9,40 @@ afterEach(() => {
 });
 
 describe("App", () => {
-  it("APIが正常な場合に接続状態を表示する", async () => {
+  it("未認証の場合にログイン画面を表示する", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
         JSON.stringify({
-          status: "ok",
-          service: "saas-api",
-          version: "0.1.0",
+          code: "UNAUTHORIZED",
+          message: "認証が必要です。",
+        }),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+    );
+
+    renderApp();
+
+    expect(await screen.findByRole("heading", { name: "SaaS Platform" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "ログイン" })).toBeInTheDocument();
+  });
+
+  it("認証済みの場合にダッシュボードを表示する", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          user: {
+            id: "018f0000-0000-7000-8000-000000000002",
+            tenant_id: "018f0000-0000-7000-8000-000000000001",
+            tenant_slug: "development",
+            tenant_name: "開発テナント",
+            email: "admin@example.test",
+            display_name: "開発管理者",
+            role: "admin",
+            csrf_token: "csrf",
+          },
         }),
         {
           status: 200,
@@ -24,21 +51,24 @@ describe("App", () => {
       ),
     );
 
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
+    renderApp();
 
-    render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter>
-          <App />
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
-
-    expect(
-      await screen.findByText("saas-api 0.1.0 は正常です。"),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "ダッシュボード" })).toBeInTheDocument();
+    expect(screen.getByText("開発管理者 さんとしてログインしています。")).toBeInTheDocument();
   });
 });
+
+function renderApp() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+
+  render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <App />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
 

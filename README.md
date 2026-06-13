@@ -17,6 +17,21 @@ make dev
 - API health: <http://localhost:3000/api/v1/health/ready>
 - OpenAPI: <http://localhost:3000/api/v1/openapi.json>
 
+開発用管理者:
+
+- テナントID: `development`
+- メールアドレス: `admin@example.test`
+- パスワード: `development-password`
+
+実装済みの初期機能:
+
+- テナント新規登録と初期管理者作成
+- テナントID・メールアドレス・パスワードによるログイン
+- HttpOnly Cookieセッション、CSRF対策、ログアウト
+- 管理者によるテナント名変更
+- テナントメンバーの追加、権限変更、有効・無効化、削除
+- PostgreSQL RLSによるテナントデータ分離
+
 MailpitとMinIOを含めて起動する場合は`make dev-tools`を使用します。
 
 主要コマンド:

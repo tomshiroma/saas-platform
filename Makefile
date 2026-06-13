@@ -48,4 +48,3 @@ logs:
 
 ps:
 	$(COMPOSE) ps
-

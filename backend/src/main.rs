@@ -1,9 +1,14 @@
 mod app;
+mod auth;
 mod config;
+mod error;
+mod state;
+mod tenant;
 
 use anyhow::{Context, Result};
 use config::Config;
 use sqlx::PgPool;
+use state::AppState;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt};
 use uuid::Uuid;
@@ -48,12 +53,20 @@ async fn seed(pool: &PgPool) -> Result<()> {
         .await
         .context("failed to begin seed transaction")?;
 
-    sqlx::query("INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
+    sqlx::query(
+        "INSERT INTO tenants (id, slug, name) VALUES ($1, 'development', $2) ON CONFLICT (id) DO NOTHING",
+    )
         .bind(TENANT_ID)
         .bind("開発テナント")
         .execute(&mut *transaction)
         .await
         .context("failed to seed tenant")?;
+
+    sqlx::query("UPDATE tenants SET slug = 'development', name = '開発テナント' WHERE id = $1")
+        .bind(TENANT_ID)
+        .execute(&mut *transaction)
+        .await
+        .context("failed to update development tenant")?;
 
     sqlx::query("SELECT set_config('app.current_tenant_id', $1, true)")
         .bind(TENANT_ID.to_string())
@@ -61,11 +74,21 @@ async fn seed(pool: &PgPool) -> Result<()> {
         .await
         .context("failed to set tenant context")?;
 
+    let password_hash = auth::hash_password("development-password".to_owned())
+        .await
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+
     sqlx::query(
         r#"
-        INSERT INTO users (id, tenant_id, email, display_name, role)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (tenant_id, email) DO NOTHING
+        INSERT INTO users (id, tenant_id, email, display_name, role, password_hash)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (tenant_id, lower(email))
+        DO UPDATE SET
+            display_name = EXCLUDED.display_name,
+            role = EXCLUDED.role,
+            password_hash = EXCLUDED.password_hash,
+            active = true,
+            updated_at = now()
         "#,
     )
     .bind(USER_ID)
@@ -73,6 +96,7 @@ async fn seed(pool: &PgPool) -> Result<()> {
     .bind("admin@example.test")
     .bind("開発管理者")
     .bind("admin")
+    .bind(password_hash)
     .execute(&mut *transaction)
     .await
     .context("failed to seed user")?;
@@ -91,7 +115,8 @@ async fn serve(config: Config, pool: PgPool) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&address)
         .await
         .with_context(|| format!("failed to bind to {address}"))?;
-    let router = app::router(pool);
+    let state = AppState::new(pool, &config);
+    let router = app::router(state);
 
     info!(%address, "API server started");
     axum::serve(listener, router)

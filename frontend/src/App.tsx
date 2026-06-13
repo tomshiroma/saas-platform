@@ -3,116 +3,111 @@ import {
   AppBar,
   Box,
   Button,
-  Card,
-  CardContent,
   CircularProgress,
   Container,
   Stack,
   Toolbar,
   Typography,
 } from "@mui/material";
-import { useQuery } from "@tanstack/react-query";
-import { Link, Route, Routes } from "react-router-dom";
-
-type HealthResponse = {
-  status: "ok";
-  service: string;
-  version: string;
-};
-
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "/api";
-
-async function fetchHealth(): Promise<HealthResponse> {
-  const response = await fetch(`${apiBaseUrl}/v1/health/ready`);
-
-  if (!response.ok) {
-    throw new Error(`Health check failed: ${response.status}`);
-  }
-
-  return (await response.json()) as HealthResponse;
-}
-
-function HomePage() {
-  const health = useQuery({
-    queryKey: ["health"],
-    queryFn: fetchHealth,
-  });
-
-  return (
-    <Container component="main" maxWidth="md" sx={{ py: 6 }}>
-      <Stack spacing={3}>
-        <Box>
-          <Typography component="h1" variant="h3" gutterBottom>
-            SaaS Platform
-          </Typography>
-          <Typography color="text.secondary">
-            React、Rust、PostgreSQLのDocker開発環境です。
-          </Typography>
-        </Box>
-
-        <Card>
-          <CardContent>
-            <Typography component="h2" variant="h5" gutterBottom>
-              API接続状態
-            </Typography>
-
-            {health.isPending ? (
-              <Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
-                <CircularProgress size={24} />
-                <Typography>確認中...</Typography>
-              </Stack>
-            ) : health.isError ? (
-              <Alert severity="error">
-                APIへ接続できません。コンテナログを確認してください。
-              </Alert>
-            ) : (
-              <Alert severity="success">
-                {health.data.service} {health.data.version} は正常です。
-              </Alert>
-            )}
-          </CardContent>
-        </Card>
-
-        <Box>
-          <Button variant="outlined" component={Link} to="/about">
-            環境情報
-          </Button>
-        </Box>
-      </Stack>
-    </Container>
-  );
-}
-
-function AboutPage() {
-  return (
-    <Container component="main" maxWidth="md" sx={{ py: 6 }}>
-      <Stack spacing={3}>
-        <Typography component="h1" variant="h3">
-          環境情報
-        </Typography>
-        <Typography>
-          フロントエンドはViteのHMR、バックエンドはcargo-watchで変更を検知します。
-        </Typography>
-        <Button component={Link} to="/" sx={{ alignSelf: "flex-start" }}>
-          戻る
-        </Button>
-      </Stack>
-    </Container>
-  );
-}
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { Link, Navigate, Route, Routes } from "react-router-dom";
+import { api, type CurrentUser } from "./api";
+import { AuthPage } from "./AuthPage";
+import { TenantPage } from "./TenantPage";
 
 export function App() {
+  const queryClient = useQueryClient();
+  const [sessionUser, setSessionUser] = useState<CurrentUser>();
+  const currentUser = useQuery({
+    queryKey: ["current-user"],
+    queryFn: api.me,
+    retry: false,
+    enabled: sessionUser === undefined,
+  });
+
+  const user = sessionUser ?? currentUser.data?.user;
+
+  const setUser = (nextUser: CurrentUser) => {
+    setSessionUser(nextUser);
+    queryClient.setQueryData(["current-user"], { user: nextUser });
+  };
+
+  const logout = async () => {
+    if (user === undefined) {
+      return;
+    }
+    await api.logout(user.csrf_token);
+    setSessionUser(undefined);
+    queryClient.clear();
+  };
+
+  if (currentUser.isPending && sessionUser === undefined) {
+    return (
+      <Stack sx={{ minHeight: "100vh", alignItems: "center", justifyContent: "center" }}>
+        <CircularProgress />
+      </Stack>
+    );
+  }
+
+  if (user === undefined) {
+    return <AuthPage onAuthenticated={setUser} />;
+  }
+
   return (
     <>
       <AppBar position="static">
         <Toolbar>
-          <Typography variant="h6">SaaS Platform</Typography>
+          <Typography variant="h6" sx={{ flexGrow: 1 }}>
+            {user.tenant_name}
+          </Typography>
+          <Button color="inherit" component={Link} to="/">
+            ホーム
+          </Button>
+          {user.role === "admin" && (
+            <Button color="inherit" component={Link} to="/tenant">
+              テナント管理
+            </Button>
+          )}
+          <Button color="inherit" onClick={() => void logout()}>
+            ログアウト
+          </Button>
         </Toolbar>
       </AppBar>
-      <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/about" element={<AboutPage />} />
-      </Routes>
+
+      <Container component="main" maxWidth="md" sx={{ py: 5 }}>
+        <Routes>
+          <Route path="/" element={<Dashboard currentUser={user} />} />
+          <Route
+            path="/tenant"
+            element={
+              <TenantPage
+                currentUser={user}
+                onCurrentUserChanged={setUser}
+              />
+            }
+          />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Container>
     </>
+  );
+}
+
+function Dashboard({ currentUser }: { currentUser: CurrentUser }) {
+  return (
+    <Stack spacing={3}>
+      <Box>
+        <Typography component="h1" variant="h3" gutterBottom>
+          ダッシュボード
+        </Typography>
+        <Typography color="text.secondary">
+          {currentUser.display_name} さんとしてログインしています。
+        </Typography>
+      </Box>
+      <Alert severity="success">
+        認証済みです。権限: {currentUser.role === "admin" ? "管理者" : "一般"}
+      </Alert>
+    </Stack>
   );
 }

@@ -4,20 +4,23 @@ use axum::{
     http::{HeaderName, Request},
     middleware::{self, Next},
     response::Response,
-    routing::get,
+    routing::{get, patch, post},
 };
 use serde::Serialize;
-use sqlx::PgPool;
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     trace::TraceLayer,
 };
 use utoipa::{OpenApi, ToSchema};
 
-#[derive(Clone)]
-struct AppState {
-    pool: PgPool,
-}
+use crate::{
+    auth::{self, AuthResponse, LoginRequest, RegisterRequest},
+    state::AppState,
+    tenant::{
+        self, CreateUserRequest, TenantResponse, UpdateTenantRequest, UpdateUserRequest,
+        UserResponse,
+    },
+};
 
 #[derive(Serialize, ToSchema)]
 struct HealthResponse {
@@ -27,17 +30,58 @@ struct HealthResponse {
 }
 
 #[derive(OpenApi)]
-#[openapi(paths(live, ready), components(schemas(HealthResponse)))]
+#[openapi(
+    paths(
+        live,
+        ready,
+        auth::register,
+        auth::login,
+        auth::me,
+        auth::logout,
+        tenant::get_tenant,
+        tenant::update_tenant,
+        tenant::list_users,
+        tenant::create_user,
+        tenant::update_user,
+        tenant::delete_user
+    ),
+    components(schemas(
+        HealthResponse,
+        RegisterRequest,
+        LoginRequest,
+        AuthResponse,
+        TenantResponse,
+        UpdateTenantRequest,
+        UserResponse,
+        CreateUserRequest,
+        UpdateUserRequest
+    ))
+)]
 struct ApiDoc;
 
-pub fn router(pool: PgPool) -> Router {
+pub fn router(state: AppState) -> Router {
     let request_id_header = HeaderName::from_static("x-request-id");
-    let state = AppState { pool };
 
     Router::new()
         .route("/api/v1/health/live", get(live))
         .route("/api/v1/health/ready", get(ready))
         .route("/api/v1/openapi.json", get(openapi))
+        .route("/api/v1/auth/register", post(auth::register))
+        .route("/api/v1/auth/login", post(auth::login))
+        .route("/api/v1/auth/me", get(auth::me))
+        .route("/api/v1/auth/logout", post(auth::logout))
+        .route(
+            "/api/v1/tenant",
+            get(tenant::get_tenant).patch(tenant::update_tenant),
+        )
+        .route(
+            "/api/v1/tenant/users",
+            get(tenant::list_users).post(tenant::create_user),
+        )
+        .route(
+            "/api/v1/tenant/users/{user_id}",
+            patch(tenant::update_user).delete(tenant::delete_user),
+        )
         .with_state(state)
         .layer(middleware::from_fn(log_request_id))
         .layer(TraceLayer::new_for_http())
