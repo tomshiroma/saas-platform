@@ -1,0 +1,3 @@
+minimumReleaseAgeExclude:
+  - eslint@10.5.0
+  - react-hook-form@7.79.0

@@ -1,0 +1,62 @@
+services:
+  init-dev:
+    build:
+      context: ./backend
+      target: development
+    user: "0:0"
+    command:
+      - sh
+      - -c
+      - chown -R 10001:10001 /usr/local/cargo/registry /usr/local/cargo/git /app/target
+    volumes:
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - rust-target:/app/target
+    network_mode: none
+    restart: "no"
+
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  migrate:
+    depends_on:
+      init-dev:
+        condition: service_completed_successfully
+    volumes:
+      - ./backend:/app
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - rust-target:/app/target
+
+  api:
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./backend:/app
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - rust-target:/app/target
+
+  frontend:
+    ports:
+      - "127.0.0.1:5173:5173"
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
+
+  mailpit:
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+
+  minio:
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+
+volumes:
+  cargo-registry:
+  cargo-git:
+  rust-target:
+  frontend-node-modules:
