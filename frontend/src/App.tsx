@@ -20,7 +20,7 @@ import {
   Typography,
 } from "@mui/material";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useState, type ReactNode } from "react";
 import {
   Link,
   Navigate,
@@ -31,6 +31,7 @@ import {
 import { api, type CurrentUser } from "./api";
 import { AuthPage } from "./AuthPage";
 import { BillingPage } from "./BillingPage";
+import { ColorModeButton } from "./ColorMode";
 import { TenantPage } from "./TenantPage";
 
 const PlatformPage = lazy(() =>
@@ -83,7 +84,11 @@ function CustomerApp() {
   };
 
   if (isPasswordReset) {
-    return <AuthPage onAuthenticated={setUser} />;
+    return (
+      <PublicPage>
+        <AuthPage onAuthenticated={setUser} />
+      </PublicPage>
+    );
   }
 
   if (currentUser.isPending && sessionUser === undefined) {
@@ -95,13 +100,16 @@ function CustomerApp() {
   }
 
   if (user === undefined) {
-    return <AuthPage onAuthenticated={setUser} />;
+    return (
+      <PublicPage>
+        <AuthPage onAuthenticated={setUser} />
+      </PublicPage>
+    );
   }
 
   const navigation = [
     {
       label: "ダッシュボード",
-      description: "利用状況の概要",
       path: "/",
       icon: <DashboardIcon />,
     },
@@ -109,13 +117,11 @@ function CustomerApp() {
       ? [
           {
             label: "テナント管理",
-            description: "設定とメンバー",
             path: "/tenant",
             icon: <TenantIcon />,
           },
           {
             label: "契約・お支払い",
-            description: "プランと請求",
             path: "/billing",
             icon: <BillingIcon />,
           },
@@ -123,52 +129,32 @@ function CustomerApp() {
       : []),
   ];
   const sidebar = (
-    <Stack sx={{ height: "100%", color: "common.white" }}>
-      <Stack spacing={0.5} sx={{ px: 3, pt: 3.5, pb: 3 }}>
+    <Stack sx={{ height: "100%" }}>
+      <Stack sx={{ px: 2.5, py: 2.5 }}>
         <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
           <Box
             sx={{
-              width: 42,
-              height: 42,
-              borderRadius: 2.5,
+              width: 36,
+              height: 36,
+              borderRadius: 1,
               display: "grid",
               placeItems: "center",
-              background:
-                "linear-gradient(135deg, rgba(110, 231, 183, 1), rgba(56, 189, 248, 1))",
-              color: "#082f49",
-              boxShadow: "0 10px 30px rgba(56, 189, 248, 0.24)",
+              bgcolor: "primary.main",
+              color: "primary.contrastText",
             }}
           >
             <BrandIcon />
           </Box>
           <Box sx={{ minWidth: 0 }}>
-            <Typography variant="subtitle1" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
+            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
               SaaS Platform
-            </Typography>
-            <Typography
-              variant="caption"
-              sx={{ color: "rgba(255,255,255,0.58)" }}
-              noWrap
-            >
-              Workspace Console
             </Typography>
           </Box>
         </Stack>
       </Stack>
 
       <Box sx={{ px: 2 }}>
-        <Typography
-          variant="overline"
-          sx={{
-            px: 1.5,
-            color: "rgba(255,255,255,0.42)",
-            fontWeight: 700,
-            letterSpacing: "0.14em",
-          }}
-        >
-          Menu
-        </Typography>
-        <List sx={{ mt: 0.5, display: "grid", gap: 0.75 }}>
+        <List sx={{ display: "grid", gap: 0.5 }}>
           {navigation.map((item) => {
             const selected =
               item.path === "/"
@@ -183,42 +169,34 @@ function CustomerApp() {
                 aria-current={selected ? "page" : undefined}
                 onClick={() => setMobileMenuOpen(false)}
                 sx={{
-                  borderRadius: 2.5,
+                  borderRadius: 1,
                   px: 1.5,
-                  py: 1.2,
-                  color: selected ? "common.white" : "rgba(255,255,255,0.68)",
+                  py: 1,
+                  color: "text.secondary",
                   "&.Mui-selected": {
-                    bgcolor: "rgba(255,255,255,0.11)",
-                    boxShadow: "inset 3px 0 0 #6ee7b7",
+                    bgcolor: "action.selected",
+                    color: "primary.main",
                   },
                   "&.Mui-selected:hover": {
-                    bgcolor: "rgba(255,255,255,0.14)",
+                    bgcolor: "action.selected",
                   },
                   "&:hover": {
-                    bgcolor: "rgba(255,255,255,0.07)",
-                    color: "common.white",
+                    bgcolor: "action.hover",
                   },
                 }}
               >
                 <ListItemIcon
                   sx={{
                     minWidth: 42,
-                    color: selected ? "#6ee7b7" : "rgba(255,255,255,0.48)",
+                    color: selected ? "primary.main" : "text.secondary",
                   }}
                 >
                   {item.icon}
                 </ListItemIcon>
                 <ListItemText
                   primary={item.label}
-                  secondary={item.description}
                   slotProps={{
                     primary: { sx: { fontWeight: 700, fontSize: 14 } },
-                    secondary: {
-                      sx: {
-                        color: "rgba(255,255,255,0.4)",
-                        fontSize: 11,
-                      },
-                    },
                   }}
                 />
               </ListItemButton>
@@ -228,14 +206,14 @@ function CustomerApp() {
       </Box>
 
       <Box sx={{ mt: "auto", p: 2 }}>
-        <Divider sx={{ borderColor: "rgba(255,255,255,0.09)", mb: 2 }} />
+        <Divider sx={{ mb: 2 }} />
         <Paper
           elevation={0}
           sx={{
             p: 1.5,
-            bgcolor: "rgba(255,255,255,0.07)",
-            color: "common.white",
-            border: "1px solid rgba(255,255,255,0.08)",
+            bgcolor: "transparent",
+            border: "1px solid",
+            borderColor: "divider",
           }}
         >
           <Stack direction="row" spacing={1.25} sx={{ alignItems: "center" }}>
@@ -243,8 +221,8 @@ function CustomerApp() {
               sx={{
                 width: 38,
                 height: 38,
-                bgcolor: "rgba(110,231,183,0.16)",
-                color: "#6ee7b7",
+                bgcolor: "primary.main",
+                color: "primary.contrastText",
                 fontWeight: 800,
               }}
             >
@@ -256,7 +234,7 @@ function CustomerApp() {
               </Typography>
               <Typography
                 variant="caption"
-                sx={{ color: "rgba(255,255,255,0.46)" }}
+                color="text.secondary"
                 noWrap
               >
                 {user.tenant_name}
@@ -269,16 +247,27 @@ function CustomerApp() {
             onClick={() => void logout()}
             sx={{
               mt: 1.25,
-              color: "rgba(255,255,255,0.72)",
+              color: "text.secondary",
               justifyContent: "flex-start",
               "&:hover": {
-                color: "common.white",
-                bgcolor: "rgba(255,255,255,0.07)",
+                bgcolor: "action.hover",
               },
             }}
           >
             ログアウト
           </Button>
+          <Stack
+            direction="row"
+            sx={{ mt: 0.5, alignItems: "center", justifyContent: "space-between" }}
+          >
+            <Typography
+              variant="caption"
+              sx={{ pl: 1, color: "text.secondary" }}
+            >
+              表示テーマ
+            </Typography>
+            <ColorModeButton />
+          </Stack>
         </Paper>
       </Box>
     </Stack>
@@ -289,14 +278,16 @@ function CustomerApp() {
       <AppBar
         position="fixed"
         elevation={0}
-        sx={{
+        sx={(theme) => ({
           display: { md: "none" },
-          bgcolor: "rgba(248,250,252,0.9)",
+          bgcolor:
+            theme.palette.mode === "dark"
+              ? "rgba(7,17,31,0.9)"
+              : "rgba(248,250,252,0.9)",
           color: "text.primary",
-          backdropFilter: "blur(16px)",
           borderBottom: "1px solid",
           borderColor: "divider",
-        }}
+        })}
       >
         <Toolbar>
           <IconButton
@@ -310,6 +301,9 @@ function CustomerApp() {
           <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
             {user.tenant_name}
           </Typography>
+          <Box sx={{ ml: "auto" }}>
+            <ColorModeButton />
+          </Box>
         </Toolbar>
       </AppBar>
 
@@ -346,8 +340,7 @@ function CustomerApp() {
           flexGrow: 1,
           minWidth: 0,
           pt: { xs: 10, md: 0 },
-          background:
-            "radial-gradient(circle at 90% 0%, rgba(56,189,248,0.09), transparent 28rem), #f8fafc",
+          bgcolor: "background.default",
         }}
       >
         <Container maxWidth="lg" sx={{ px: { xs: 2, sm: 3, lg: 5 }, py: { xs: 3, md: 5 } }}>
@@ -376,77 +369,29 @@ function CustomerApp() {
 
 function Dashboard({ currentUser }: { currentUser: CurrentUser }) {
   return (
-    <Stack spacing={4}>
-      <Stack
-        direction={{ xs: "column", sm: "row" }}
-        spacing={2}
-        sx={{ justifyContent: "space-between", alignItems: { sm: "flex-end" } }}
-      >
+    <Stack spacing={3}>
+      <Stack spacing={1}>
         <Box>
-          <Typography
-            variant="overline"
-            color="primary.main"
-            sx={{ fontWeight: 800, letterSpacing: "0.13em" }}
-          >
-            Overview
-          </Typography>
-          <Typography component="h1" variant="h3" sx={{ mt: 0.5 }}>
+          <Typography component="h1" variant="h3">
             ダッシュボード
           </Typography>
           <Typography color="text.secondary" sx={{ mt: 1 }}>
             {currentUser.display_name} さん、おかえりなさい。
           </Typography>
         </Box>
-        <Box
-          sx={{
-            px: 1.5,
-            py: 0.75,
-            borderRadius: 99,
-            bgcolor: "success.light",
-            color: "success.dark",
-            fontSize: 13,
-            fontWeight: 800,
-          }}
-        >
-          システム正常
-        </Box>
       </Stack>
 
-      <Paper
-        sx={{
-          position: "relative",
-          overflow: "hidden",
-          p: { xs: 3, md: 4 },
-          color: "common.white",
-          background: "linear-gradient(125deg, #0f172a 0%, #164e63 100%)",
-        }}
-      >
-        <Box
-          aria-hidden="true"
-          sx={{
-            position: "absolute",
-            width: 240,
-            height: 240,
-            borderRadius: "50%",
-            right: -70,
-            top: -110,
-            background: "rgba(110,231,183,0.14)",
-            filter: "blur(2px)",
-          }}
-        />
-        <Stack spacing={2} sx={{ position: "relative", maxWidth: 620 }}>
-          <Typography variant="overline" sx={{ color: "#6ee7b7", fontWeight: 800 }}>
-            Current workspace
-          </Typography>
-          <Typography variant="h4" sx={{ fontWeight: 800 }}>
+      <Paper variant="outlined" sx={{ p: 3 }}>
+        <Stack spacing={2}>
+          <Typography variant="h5">
             {currentUser.tenant_name}
           </Typography>
-          <Typography sx={{ color: "rgba(255,255,255,0.68)" }}>
-            チームのメンバー、契約情報、ワークスペース設定を一つの場所から管理できます。
+          <Typography color="text.secondary">
+            ワークスペースの設定と契約情報を管理できます。
           </Typography>
-          <Stack direction="row" spacing={1} sx={{ pt: 1 }}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
             <Box sx={dashboardStatStyles}>
-              <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.5)" }}>
+              <Typography variant="caption" color="text.secondary">
                 あなたの権限
               </Typography>
               <Typography sx={{ fontWeight: 800 }}>
@@ -454,7 +399,7 @@ function Dashboard({ currentUser }: { currentUser: CurrentUser }) {
               </Typography>
             </Box>
             <Box sx={dashboardStatStyles}>
-              <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.5)" }}>
+              <Typography variant="caption" color="text.secondary">
                 ステータス
               </Typography>
               <Typography sx={{ fontWeight: 800 }}>認証済み</Typography>
@@ -473,18 +418,19 @@ function Dashboard({ currentUser }: { currentUser: CurrentUser }) {
 const sidebarPaperStyles = {
   width: drawerWidth,
   boxSizing: "border-box",
-  border: 0,
-  background:
-    "radial-gradient(circle at 20% 0%, rgba(14,116,144,0.48), transparent 19rem), #0f172a",
+  borderRight: "1px solid",
+  borderColor: "divider",
+  bgcolor: "background.paper",
 } as const;
 
 const dashboardStatStyles = {
   minWidth: 132,
   px: 2,
   py: 1.25,
-  borderRadius: 2,
-  bgcolor: "rgba(255,255,255,0.07)",
-  border: "1px solid rgba(255,255,255,0.08)",
+  borderRadius: 1,
+  bgcolor: "background.default",
+  border: "1px solid",
+  borderColor: "divider",
 } as const;
 
 function BrandIcon() {
@@ -540,5 +486,16 @@ function FullPageLoading() {
     <Stack sx={{ minHeight: "100vh", alignItems: "center", justifyContent: "center" }}>
       <CircularProgress />
     </Stack>
+  );
+}
+
+function PublicPage({ children }: { children: ReactNode }) {
+  return (
+    <Box sx={{ position: "relative", minHeight: "100vh" }}>
+      <Box sx={{ position: "fixed", top: 16, right: 16, zIndex: 1 }}>
+        <ColorModeButton />
+      </Box>
+      {children}
+    </Box>
   );
 }
