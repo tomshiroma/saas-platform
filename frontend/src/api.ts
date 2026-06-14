@@ -8,6 +8,7 @@ export type CurrentUser = {
   email: string;
   display_name: string;
   role: Role;
+  mfa_enabled: boolean;
   csrf_token: string;
 };
 
@@ -139,6 +140,15 @@ type AuthResponse = {
   user: CurrentUser;
 };
 
+export type AuthFlowResponse = {
+  status: "authenticated" | "mfa_setup_required" | "mfa_required";
+  user?: CurrentUser;
+  challenge_token?: string;
+  secret?: string;
+  provisioning_uri?: string;
+  recovery_codes?: string[];
+};
+
 type PlatformAuthResponse = {
   admin: PlatformAdmin;
 };
@@ -201,12 +211,12 @@ async function request<T>(
 export const api = {
   me: () => request<AuthResponse>("/v1/auth/me"),
   login: (input: LoginInput) =>
-    request<AuthResponse>("/v1/auth/login", {
+    request<AuthFlowResponse>("/v1/auth/login", {
       method: "POST",
       body: JSON.stringify(input),
     }),
   register: (input: RegisterInput) =>
-    request<AuthResponse>("/v1/auth/register", {
+    request<AuthFlowResponse>("/v1/auth/register", {
       method: "POST",
       body: JSON.stringify(input),
     }),
@@ -220,6 +230,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  confirmMfaSetup: (challengeToken: string, code: string) =>
+    request<AuthFlowResponse>("/v1/auth/mfa/setup/confirm", {
+      method: "POST",
+      body: JSON.stringify({ challenge_token: challengeToken, code }),
+    }),
+  verifyMfa: (challengeToken: string, code: string) =>
+    request<AuthFlowResponse>("/v1/auth/mfa/verify", {
+      method: "POST",
+      body: JSON.stringify({ challenge_token: challengeToken, code }),
+    }),
+  resetMfa: (password: string, code: string, csrfToken: string) =>
+    request<AuthFlowResponse>(
+      "/v1/auth/mfa/reset",
+      { method: "POST", body: JSON.stringify({ password, code }) },
+      csrfToken,
+    ),
   logout: (csrfToken: string) =>
     request<void>("/v1/auth/logout", { method: "POST" }, csrfToken),
   tenant: () => request<Tenant>("/v1/tenant"),

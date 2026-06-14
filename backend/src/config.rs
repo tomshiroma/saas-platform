@@ -1,10 +1,13 @@
 use anyhow::{Context, Result};
+use base64::{Engine, engine::general_purpose::STANDARD};
 
 pub struct Config {
     pub database_url: String,
     pub port: u16,
     pub session_ttl_seconds: i64,
     pub password_reset_ttl_seconds: i64,
+    pub mfa_challenge_ttl_seconds: i64,
+    pub mfa_encryption_key: [u8; 32],
     pub cookie_secure: bool,
     pub app_base_url: String,
     pub smtp_host: String,
@@ -30,6 +33,20 @@ impl Config {
             .unwrap_or_else(|_| "1800".to_owned())
             .parse()
             .context("PASSWORD_RESET_TTL_SECONDS must be a valid i64")?;
+        let mfa_challenge_ttl_seconds = std::env::var("MFA_CHALLENGE_TTL_SECONDS")
+            .unwrap_or_else(|_| "300".to_owned())
+            .parse()
+            .context("MFA_CHALLENGE_TTL_SECONDS must be a valid i64")?;
+        let mfa_encryption_key = std::env::var("MFA_ENCRYPTION_KEY")
+            .context("MFA_ENCRYPTION_KEY must be configured")
+            .and_then(|value| {
+                let decoded = STANDARD
+                    .decode(value)
+                    .context("MFA_ENCRYPTION_KEY must be base64")?;
+                decoded.try_into().map_err(|_| {
+                    anyhow::anyhow!("MFA_ENCRYPTION_KEY must decode to exactly 32 bytes")
+                })
+            })?;
         let cookie_secure = std::env::var("COOKIE_SECURE")
             .unwrap_or_else(|_| "false".to_owned())
             .parse()
@@ -53,6 +70,8 @@ impl Config {
             port,
             session_ttl_seconds,
             password_reset_ttl_seconds,
+            mfa_challenge_ttl_seconds,
+            mfa_encryption_key,
             cookie_secure,
             app_base_url,
             smtp_host,

@@ -4,6 +4,7 @@ mod billing;
 mod config;
 mod email;
 mod error;
+mod mfa;
 mod platform;
 mod state;
 mod stripe;

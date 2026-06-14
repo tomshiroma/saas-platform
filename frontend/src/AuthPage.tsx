@@ -13,11 +13,17 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { useForm } from "react-hook-form";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { z } from "zod";
-import { ApiError, api, type CurrentUser } from "./api";
+import {
+  ApiError,
+  api,
+  type AuthFlowResponse,
+  type CurrentUser,
+} from "./api";
+import { MfaQrCode } from "./MfaQrCode";
 
 const loginSchema = z.object({
   tenant_slug: z
@@ -67,7 +73,20 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
   const [view, setView] = useState<"login" | "register" | "forgot">(
     "login",
   );
+  const [mfaFlow, setMfaFlow] = useState<AuthFlowResponse>();
+  const [recoveryResult, setRecoveryResult] = useState<AuthFlowResponse>();
   const showResetForm = resetToken !== null;
+  const handleAuthFlow = (response: AuthFlowResponse) => {
+    if (response.status === "authenticated" && response.user !== undefined) {
+      if ((response.recovery_codes?.length ?? 0) > 0) {
+        setRecoveryResult(response);
+      } else {
+        onAuthenticated(response.user);
+      }
+      return;
+    }
+    setMfaFlow(response);
+  };
 
   return (
     <Container component="main" maxWidth="sm" sx={{ py: 8 }}>
@@ -95,15 +114,26 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
             </Tabs>
           )}
           <CardContent>
-            {showResetForm ? (
+            {recoveryResult?.user !== undefined ? (
+              <RecoveryCodes
+                codes={recoveryResult.recovery_codes ?? []}
+                onContinue={() => onAuthenticated(recoveryResult.user!)}
+              />
+            ) : mfaFlow !== undefined ? (
+              <MfaChallengeForm
+                flow={mfaFlow}
+                onCompleted={handleAuthFlow}
+                onBack={() => setMfaFlow(undefined)}
+              />
+            ) : showResetForm ? (
               <PasswordResetConfirmForm token={resetToken} />
             ) : view === "login" ? (
               <LoginForm
-                onAuthenticated={onAuthenticated}
+                onAuthFlow={handleAuthFlow}
                 onForgotPassword={() => setView("forgot")}
               />
             ) : view === "register" ? (
-              <RegisterForm onAuthenticated={onAuthenticated} />
+              <RegisterForm onAuthFlow={handleAuthFlow} />
             ) : (
               <PasswordResetRequestForm
                 onBack={() => setView("login")}
@@ -125,9 +155,12 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
 }
 
 function LoginForm({
-  onAuthenticated,
+  onAuthFlow,
   onForgotPassword,
-}: AuthPageProps & { onForgotPassword: () => void }) {
+}: {
+  onAuthFlow: (response: AuthFlowResponse) => void;
+  onForgotPassword: () => void;
+}) {
   const [error, setError] = useState<string>();
   const {
     register,
@@ -146,7 +179,7 @@ function LoginForm({
     setError(undefined);
     try {
       const response = await api.login(values);
-      onAuthenticated(response.user);
+      onAuthFlow(response);
     } catch (cause) {
       setError(errorMessage(cause));
     }
@@ -318,7 +351,11 @@ function PasswordResetConfirmForm({ token }: { token: string }) {
   );
 }
 
-function RegisterForm({ onAuthenticated }: AuthPageProps) {
+function RegisterForm({
+  onAuthFlow,
+}: {
+  onAuthFlow: (response: AuthFlowResponse) => void;
+}) {
   const [error, setError] = useState<string>();
   const {
     register,
@@ -339,7 +376,7 @@ function RegisterForm({ onAuthenticated }: AuthPageProps) {
     setError(undefined);
     try {
       const response = await api.register(values);
-      onAuthenticated(response.user);
+      onAuthFlow(response);
     } catch (cause) {
       setError(errorMessage(cause));
     }
@@ -386,6 +423,114 @@ function RegisterForm({ onAuthenticated }: AuthPageProps) {
       />
       <Button type="submit" variant="contained" disabled={isSubmitting}>
         {isSubmitting ? "登録中..." : "テナントを作成"}
+      </Button>
+    </Stack>
+  );
+}
+
+function MfaChallengeForm({
+  flow,
+  onCompleted,
+  onBack,
+}: {
+  flow: AuthFlowResponse;
+  onCompleted: (response: AuthFlowResponse) => void;
+  onBack: () => void;
+}) {
+  const [code, setCode] = useState("");
+  const [error, setError] = useState<string>();
+  const [submitting, setSubmitting] = useState(false);
+  const setup = flow.status === "mfa_setup_required";
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (flow.challenge_token === undefined) {
+      return;
+    }
+    setSubmitting(true);
+    setError(undefined);
+    try {
+      const response = setup
+        ? await api.confirmMfaSetup(flow.challenge_token, code)
+        : await api.verifyMfa(flow.challenge_token, code);
+      onCompleted(response);
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Stack component="form" spacing={2} onSubmit={submit}>
+      <Typography component="h2" variant="h5">
+        {setup ? "多要素認証の設定" : "多要素認証"}
+      </Typography>
+      <Typography color="text.secondary">
+        {setup
+          ? "認証アプリへシークレットを登録し、表示された6桁のコードを入力してください。"
+          : "認証アプリの6桁コード、または未使用のリカバリーコードを入力してください。"}
+      </Typography>
+      {error !== undefined && <Alert severity="error">{error}</Alert>}
+      {setup && flow.secret !== undefined && (
+        <>
+          {flow.provisioning_uri !== undefined && (
+            <MfaQrCode provisioningUri={flow.provisioning_uri} />
+          )}
+          <Alert severity="info">
+            セットアップキー: <strong>{flow.secret}</strong>
+          </Alert>
+        </>
+      )}
+      <TextField
+        label={setup ? "6桁の認証コード" : "認証コードまたはリカバリーコード"}
+        value={code}
+        onChange={(event) => setCode(event.target.value)}
+        autoComplete="one-time-code"
+        slotProps={{ htmlInput: { inputMode: setup ? "numeric" : "text" } }}
+        required
+      />
+      <Button type="submit" variant="contained" disabled={submitting}>
+        {submitting ? "確認中..." : setup ? "MFAを有効にする" : "確認してログイン"}
+      </Button>
+      <Button type="button" onClick={onBack}>
+        ログインへ戻る
+      </Button>
+    </Stack>
+  );
+}
+
+function RecoveryCodes({
+  codes,
+  onContinue,
+}: {
+  codes: string[];
+  onContinue: () => void;
+}) {
+  return (
+    <Stack spacing={2}>
+      <Typography component="h2" variant="h5">
+        リカバリーコードを保存
+      </Typography>
+      <Alert severity="warning">
+        認証アプリを利用できない場合に必要です。各コードは1回だけ使用できます。
+      </Alert>
+      <Box
+        component="pre"
+        sx={{
+          m: 0,
+          p: 2,
+          border: 1,
+          borderColor: "divider",
+          borderRadius: 1,
+          fontFamily: "monospace",
+          whiteSpace: "pre-wrap",
+        }}
+      >
+        {codes.join("\n")}
+      </Box>
+      <Button variant="contained" onClick={onContinue}>
+        保存しました
       </Button>
     </Stack>
   );

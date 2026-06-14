@@ -31,6 +31,7 @@ import {
   type CurrentUser,
   type TenantUser,
 } from "./api";
+import { MfaQrCode } from "./MfaQrCode";
 
 const tenantSchema = z.object({
   name: z.string().trim().min(1, "テナント名を入力してください。").max(100),
@@ -68,8 +69,185 @@ export function TenantPage({
         currentUser={currentUser}
         onCurrentUserChanged={onCurrentUserChanged}
       />
+      <MfaSettings
+        currentUser={currentUser}
+        onCurrentUserChanged={onCurrentUserChanged}
+      />
       <UserManagement currentUser={currentUser} />
     </Stack>
+  );
+}
+
+function MfaSettings({
+  currentUser,
+  onCurrentUserChanged,
+}: TenantPageProps) {
+  const [open, setOpen] = useState(false);
+  const [password, setPassword] = useState("");
+  const [currentCode, setCurrentCode] = useState("");
+  const [setupCode, setSetupCode] = useState("");
+  const [flow, setFlow] = useState<Awaited<ReturnType<typeof api.resetMfa>>>();
+  const [completed, setCompleted] = useState<Awaited<
+    ReturnType<typeof api.confirmMfaSetup>
+  >>();
+  const [error, setError] = useState<string>();
+  const reset = useMutation({
+    mutationFn: () =>
+      api.resetMfa(password, currentCode, currentUser.csrf_token),
+    onSuccess: (response) => {
+      setError(undefined);
+      setFlow(response);
+    },
+    onError: (cause) => setError(errorMessage(cause)),
+  });
+  const confirm = useMutation({
+    mutationFn: () =>
+      api.confirmMfaSetup(flow?.challenge_token ?? "", setupCode),
+    onSuccess: (response) => {
+      setError(undefined);
+      setCompleted(response);
+    },
+    onError: (cause) => setError(errorMessage(cause)),
+  });
+
+  const close = () => {
+    setOpen(false);
+    setPassword("");
+    setCurrentCode("");
+    setSetupCode("");
+    setFlow(undefined);
+    setCompleted(undefined);
+    setError(undefined);
+  };
+
+  const finish = () => {
+    if (completed?.user !== undefined) {
+      onCurrentUserChanged(completed.user);
+    }
+    close();
+  };
+
+  return (
+    <Card>
+      <CardContent>
+        <Stack spacing={2}>
+          <Box>
+            <Typography component="h2" variant="h5">
+              多要素認証
+            </Typography>
+            <Typography color="text.secondary">
+              TOTP認証は有効です。認証アプリを変更する場合は再設定してください。
+            </Typography>
+          </Box>
+          <Button
+            variant="outlined"
+            onClick={() => setOpen(true)}
+            sx={{ alignSelf: "flex-start" }}
+          >
+            MFAを再設定
+          </Button>
+        </Stack>
+      </CardContent>
+
+      <Dialog open={open} onClose={flow === undefined ? close : undefined} fullWidth maxWidth="sm">
+        <DialogTitle>MFAを再設定</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            {error !== undefined && <Alert severity="error">{error}</Alert>}
+            {completed?.user !== undefined ? (
+              <>
+                <Alert severity="warning">
+                  新しいリカバリーコードを安全な場所へ保存してください。以前のコードは無効です。
+                </Alert>
+                <Box
+                  component="pre"
+                  sx={{
+                    m: 0,
+                    p: 2,
+                    border: 1,
+                    borderColor: "divider",
+                    borderRadius: 1,
+                    fontFamily: "monospace",
+                    whiteSpace: "pre-wrap",
+                  }}
+                >
+                  {(completed.recovery_codes ?? []).join("\n")}
+                </Box>
+              </>
+            ) : flow?.status === "mfa_setup_required" ? (
+              <>
+                <Typography color="text.secondary">
+                  認証アプリへ新しいセットアップキーを登録してください。
+                </Typography>
+                {flow.provisioning_uri !== undefined && (
+                  <MfaQrCode provisioningUri={flow.provisioning_uri} />
+                )}
+                <Alert severity="info">
+                  セットアップキー: <strong>{flow.secret}</strong>
+                </Alert>
+                <TextField
+                  label="新しい6桁の認証コード"
+                  value={setupCode}
+                  onChange={(event) => setSetupCode(event.target.value)}
+                  autoComplete="one-time-code"
+                  slotProps={{ htmlInput: { inputMode: "numeric" } }}
+                />
+              </>
+            ) : (
+              <>
+                <Alert severity="warning">
+                  再設定すると、現在のセッション、既存のセットアップキー、リカバリーコードは無効になります。
+                </Alert>
+                <TextField
+                  label="現在のパスワード"
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  autoComplete="current-password"
+                />
+                <TextField
+                  label="現在の認証コードまたはリカバリーコード"
+                  value={currentCode}
+                  onChange={(event) => setCurrentCode(event.target.value)}
+                  autoComplete="one-time-code"
+                />
+              </>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          {completed?.user !== undefined ? (
+            <Button variant="contained" onClick={finish}>
+              保存しました
+            </Button>
+          ) : flow?.status === "mfa_setup_required" ? (
+            <Button
+              variant="contained"
+              onClick={() => confirm.mutate()}
+              disabled={confirm.isPending || setupCode.length !== 6}
+            >
+              {confirm.isPending ? "確認中..." : "新しいMFAを有効にする"}
+            </Button>
+          ) : (
+            <>
+              <Button onClick={close}>キャンセル</Button>
+              <Button
+                color="error"
+                variant="contained"
+                onClick={() => reset.mutate()}
+                disabled={
+                  reset.isPending ||
+                  password.length < 12 ||
+                  currentCode.trim().length < 6
+                }
+              >
+                {reset.isPending ? "確認中..." : "再設定を開始"}
+              </Button>
+            </>
+          )}
+        </DialogActions>
+      </Dialog>
+    </Card>
   );
 }
 

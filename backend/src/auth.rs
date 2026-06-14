@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     error::{ApiError, ApiResult},
+    mfa,
     state::AppState,
 };
 
@@ -32,6 +33,7 @@ pub struct CurrentUser {
     pub email: String,
     pub display_name: String,
     pub role: String,
+    pub mfa_enabled: bool,
     pub csrf_token: String,
 }
 
@@ -58,6 +60,18 @@ pub struct LoginRequest {
 }
 
 #[derive(Deserialize, ToSchema)]
+pub struct MfaCodeRequest {
+    pub challenge_token: String,
+    pub code: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct MfaResetRequest {
+    pub password: String,
+    pub code: String,
+}
+
+#[derive(Deserialize, ToSchema)]
 pub struct PasswordResetRequest {
     pub tenant_slug: String,
     pub email: String,
@@ -79,6 +93,21 @@ pub struct AuthResponse {
     pub user: CurrentUser,
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct AuthFlowResponse {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<CurrentUser>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub challenge_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provisioning_uri: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_codes: Option<Vec<String>>,
+}
+
 const PASSWORD_RESET_RESPONSE: &str =
     "入力された情報に一致するアカウントがある場合、再設定メールを送信しました。";
 
@@ -94,13 +123,14 @@ struct LoginUser {
     password_hash: String,
     failed_login_count: i32,
     locked: bool,
+    mfa_secret_encrypted: Option<Vec<u8>>,
 }
 
 #[utoipa::path(
     post,
     path = "/api/v1/auth/register",
     request_body = RegisterRequest,
-    responses((status = 201, description = "Tenant and administrator created", body = AuthResponse))
+    responses((status = 201, description = "Tenant and administrator created; MFA setup required", body = AuthFlowResponse))
 )]
 pub async fn register(
     State(state): State<AppState>,
@@ -161,24 +191,18 @@ pub async fn register(
     )
     .await?;
 
-    let (session_token, csrf_token) =
-        create_session(&mut transaction, &state, tenant_id, user_id).await?;
+    let setup = create_mfa_setup_challenge(
+        &mut transaction,
+        &state,
+        tenant_id,
+        user_id,
+        &email,
+        &tenant_name,
+    )
+    .await?;
     transaction.commit().await.map_err(ApiError::internal)?;
 
-    let mut response = auth_response(
-        &state,
-        session_token,
-        CurrentUser {
-            id: user_id,
-            tenant_id,
-            tenant_slug,
-            tenant_name,
-            email,
-            display_name,
-            role: "admin".to_owned(),
-            csrf_token,
-        },
-    );
+    let mut response = Json(setup).into_response();
     *response.status_mut() = axum::http::StatusCode::CREATED;
     Ok(response)
 }
@@ -187,7 +211,7 @@ pub async fn register(
     post,
     path = "/api/v1/auth/login",
     request_body = LoginRequest,
-    responses((status = 200, description = "Authenticated", body = AuthResponse))
+    responses((status = 200, description = "Authenticated or MFA challenge issued", body = AuthFlowResponse))
 )]
 pub async fn login(
     State(state): State<AppState>,
@@ -219,7 +243,8 @@ pub async fn login(
             u.role,
             u.password_hash,
             u.failed_login_count,
-            coalesce(u.locked_until > now(), false) AS locked
+            coalesce(u.locked_until > now(), false) AS locked,
+            u.mfa_secret_encrypted
         FROM users u
         WHERE u.tenant_id = $1 AND lower(u.email) = lower($4) AND u.active = true
         "#,
@@ -240,7 +265,7 @@ pub async fn login(
         ));
     }
 
-    if !verify_password(request.password, user.password_hash).await? {
+    if !verify_password(request.password, user.password_hash.clone()).await? {
         sqlx::query(
             r#"
             UPDATE users
@@ -263,7 +288,7 @@ pub async fn login(
         return Err(invalid_credentials());
     }
 
-    if user.failed_login_count > 0 {
+    if user.failed_login_count > 0 && user.role != "admin" {
         sqlx::query(
             r#"
             UPDATE users
@@ -283,33 +308,152 @@ pub async fn login(
         .await
         .map_err(ApiError::internal)?;
 
+    if user.role == "admin" {
+        let response = if user.mfa_secret_encrypted.is_some() {
+            create_mfa_verify_challenge(&mut transaction, &state, user.tenant_id, user.id).await?
+        } else {
+            create_mfa_setup_challenge(
+                &mut transaction,
+                &state,
+                user.tenant_id,
+                user.id,
+                &user.email,
+                &user.tenant_name,
+            )
+            .await?
+        };
+        transaction.commit().await.map_err(ApiError::internal)?;
+        return Ok(Json(response).into_response());
+    }
+
     let (session_token, csrf_token) =
-        create_session(&mut transaction, &state, user.tenant_id, user.id).await?;
+        create_session(&mut transaction, &state, user.tenant_id, user.id, false).await?;
+    let current_user = current_user_from_login(user, csrf_token, false);
     write_audit(
         &mut transaction,
-        user.tenant_id,
-        user.id,
+        current_user.tenant_id,
+        current_user.id,
         "auth.login",
         "user",
-        Some(user.id),
+        Some(current_user.id),
     )
     .await?;
     transaction.commit().await.map_err(ApiError::internal)?;
 
-    Ok(auth_response(
+    Ok(auth_flow_response(&state, session_token, current_user))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/mfa/setup/confirm",
+    request_body = MfaCodeRequest,
+    responses((status = 200, description = "MFA setup completed", body = AuthFlowResponse))
+)]
+pub async fn confirm_mfa_setup(
+    State(state): State<AppState>,
+    Json(request): Json<MfaCodeRequest>,
+) -> ApiResult<Response> {
+    complete_mfa_challenge(&state, request, "setup").await
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/mfa/verify",
+    request_body = MfaCodeRequest,
+    responses((status = 200, description = "MFA verification completed", body = AuthFlowResponse))
+)]
+pub async fn verify_mfa(
+    State(state): State<AppState>,
+    Json(request): Json<MfaCodeRequest>,
+) -> ApiResult<Response> {
+    complete_mfa_challenge(&state, request, "verify").await
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/mfa/reset",
+    request_body = MfaResetRequest,
+    responses((status = 200, description = "Existing MFA removed and new setup challenge issued", body = AuthFlowResponse))
+)]
+pub async fn reset_mfa(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<MfaResetRequest>,
+) -> ApiResult<Json<AuthFlowResponse>> {
+    let user = authenticate(&state, &headers).await?;
+    if !user.is_admin() {
+        return Err(ApiError::forbidden("管理者権限が必要です。"));
+    }
+    require_csrf(&headers, &user)?;
+
+    let mut transaction = state.pool.begin().await.map_err(ApiError::internal)?;
+    set_tenant_context(&mut transaction, user.tenant_id).await?;
+    let credentials = sqlx::query_as::<_, (String, Option<Vec<u8>>)>(
+        "SELECT password_hash, mfa_secret_encrypted FROM users WHERE id = $1 AND tenant_id = $2",
+    )
+    .bind(user.id)
+    .bind(user.tenant_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?;
+
+    if !verify_password(request.password, credentials.0).await?
+        || !verify_mfa_code(
+            &mut transaction,
+            &state,
+            user.tenant_id,
+            user.id,
+            credentials.1.as_deref(),
+            &request.code,
+        )
+        .await?
+    {
+        return Err(ApiError::unauthorized_with(
+            "INVALID_MFA_CREDENTIALS",
+            "パスワードまたは認証コードが正しくありません。",
+        ));
+    }
+
+    sqlx::query(
+        "UPDATE users SET mfa_secret_encrypted = NULL, mfa_enabled_at = NULL, updated_at = now() WHERE id = $1 AND tenant_id = $2",
+    )
+    .bind(user.id)
+    .bind(user.tenant_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?;
+    sqlx::query("DELETE FROM user_mfa_recovery_codes WHERE user_id = $1 AND tenant_id = $2")
+        .bind(user.id)
+        .bind(user.tenant_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(ApiError::internal)?;
+    sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND tenant_id = $2")
+        .bind(user.id)
+        .bind(user.tenant_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(ApiError::internal)?;
+    write_audit(
+        &mut transaction,
+        user.tenant_id,
+        user.id,
+        "auth.mfa_reset",
+        "user",
+        Some(user.id),
+    )
+    .await?;
+    let response = create_mfa_setup_challenge(
+        &mut transaction,
         &state,
-        session_token,
-        CurrentUser {
-            id: user.id,
-            tenant_id: user.tenant_id,
-            tenant_slug: user.tenant_slug,
-            tenant_name: user.tenant_name,
-            email: user.email,
-            display_name: user.display_name,
-            role: user.role,
-            csrf_token,
-        },
-    ))
+        user.tenant_id,
+        user.id,
+        &user.email,
+        &user.tenant_name,
+    )
+    .await?;
+    transaction.commit().await.map_err(ApiError::internal)?;
+    Ok(Json(response))
 }
 
 #[utoipa::path(
@@ -548,6 +692,146 @@ pub async fn me(
     Ok(Json(AuthResponse { user }))
 }
 
+async fn complete_mfa_challenge(
+    state: &AppState,
+    request: MfaCodeRequest,
+    expected_purpose: &str,
+) -> ApiResult<Response> {
+    let tenant_id = challenge_tenant_id(&request.challenge_token)?;
+    let mut transaction = state.pool.begin().await.map_err(ApiError::internal)?;
+    set_tenant_context(&mut transaction, tenant_id).await?;
+    let challenge = sqlx::query_as::<_, (Uuid, Uuid, String, Option<Vec<u8>>)>(
+        r#"
+        SELECT c.id, c.user_id, c.purpose, c.secret_encrypted
+        FROM user_mfa_challenges c
+        JOIN users u ON u.id = c.user_id AND u.tenant_id = c.tenant_id
+        WHERE c.tenant_id = $1
+          AND c.token_hash = $2
+          AND c.expires_at > now()
+          AND coalesce(u.locked_until <= now(), true)
+        FOR UPDATE
+        "#,
+    )
+    .bind(tenant_id)
+    .bind(token_hash(&request.challenge_token))
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?
+    .ok_or_else(invalid_mfa_challenge)?;
+    if challenge.2 != expected_purpose {
+        return Err(invalid_mfa_challenge());
+    }
+
+    let user = load_current_user(&mut transaction, tenant_id, challenge.1, String::new()).await?;
+    if !user.is_admin() {
+        return Err(ApiError::forbidden("管理者権限が必要です。"));
+    }
+
+    let recovery_codes = if expected_purpose == "setup" {
+        let encrypted = challenge.3.as_deref().ok_or_else(invalid_mfa_challenge)?;
+        let secret = mfa::decrypt_secret(&state.mfa_encryption_key, encrypted)?;
+        if !mfa::verify_totp(&secret, request.code.trim()) {
+            record_mfa_failure(&mut transaction, tenant_id, user.id).await?;
+            transaction.commit().await.map_err(ApiError::internal)?;
+            return Err(invalid_mfa_code());
+        }
+        sqlx::query(
+            "UPDATE users SET mfa_secret_encrypted = $1, mfa_enabled_at = now(), updated_at = now() WHERE id = $2 AND tenant_id = $3",
+        )
+        .bind(encrypted)
+        .bind(user.id)
+        .bind(tenant_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(ApiError::internal)?;
+        sqlx::query("DELETE FROM user_mfa_recovery_codes WHERE user_id = $1 AND tenant_id = $2")
+            .bind(user.id)
+            .bind(tenant_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(ApiError::internal)?;
+        let codes = mfa::generate_recovery_codes();
+        for code in &codes {
+            sqlx::query(
+                "INSERT INTO user_mfa_recovery_codes (id, tenant_id, user_id, code_hash) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(tenant_id)
+            .bind(user.id)
+            .bind(token_hash(&mfa::normalize_recovery_code(code)))
+            .execute(&mut *transaction)
+            .await
+            .map_err(ApiError::internal)?;
+        }
+        Some(codes)
+    } else {
+        let encrypted = sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT mfa_secret_encrypted FROM users WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(user.id)
+        .bind(tenant_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(invalid_mfa_challenge)?;
+        if !verify_mfa_code(
+            &mut transaction,
+            state,
+            tenant_id,
+            user.id,
+            Some(&encrypted),
+            &request.code,
+        )
+        .await?
+        {
+            record_mfa_failure(&mut transaction, tenant_id, user.id).await?;
+            transaction.commit().await.map_err(ApiError::internal)?;
+            return Err(invalid_mfa_code());
+        }
+        None
+    };
+
+    sqlx::query("DELETE FROM user_mfa_challenges WHERE id = $1")
+        .bind(challenge.0)
+        .execute(&mut *transaction)
+        .await
+        .map_err(ApiError::internal)?;
+    sqlx::query(
+        "UPDATE users SET failed_login_count = 0, locked_until = NULL, updated_at = now() WHERE id = $1 AND tenant_id = $2",
+    )
+    .bind(user.id)
+    .bind(tenant_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?;
+    let (session_token, csrf_token) =
+        create_session(&mut transaction, state, tenant_id, user.id, true).await?;
+    write_audit(
+        &mut transaction,
+        tenant_id,
+        user.id,
+        if expected_purpose == "setup" {
+            "auth.mfa_setup"
+        } else {
+            "auth.login"
+        },
+        "user",
+        Some(user.id),
+    )
+    .await?;
+    transaction.commit().await.map_err(ApiError::internal)?;
+
+    let mut authenticated_user = user;
+    authenticated_user.csrf_token = csrf_token;
+    authenticated_user.mfa_enabled = true;
+    Ok(auth_flow_response_with_recovery_codes(
+        state,
+        session_token,
+        authenticated_user,
+        recovery_codes,
+    ))
+}
+
 #[utoipa::path(
     post,
     path = "/api/v1/auth/logout",
@@ -576,9 +860,9 @@ pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> ApiRes
 
 pub async fn authenticate(state: &AppState, headers: &HeaderMap) -> ApiResult<CurrentUser> {
     let token = session_cookie(headers).ok_or_else(ApiError::unauthorized)?;
-    let session = sqlx::query_as::<_, (Uuid, Uuid, String)>(
+    let session = sqlx::query_as::<_, (Uuid, Uuid, String, bool)>(
         r#"
-        SELECT tenant_id, user_id, csrf_token
+        SELECT tenant_id, user_id, csrf_token, mfa_verified
         FROM sessions
         WHERE token_hash = $1 AND expires_at > now()
         "#,
@@ -591,23 +875,10 @@ pub async fn authenticate(state: &AppState, headers: &HeaderMap) -> ApiResult<Cu
 
     let mut transaction = state.pool.begin().await.map_err(ApiError::internal)?;
     set_tenant_context(&mut transaction, session.0).await?;
-    let user = sqlx::query_as::<_, (Uuid, Uuid, String, String, String, String, String)>(
-        r#"
-        SELECT u.id, u.tenant_id, t.slug, t.name, u.email, u.display_name, u.role
-        FROM users u
-        JOIN tenants t ON t.id = u.tenant_id
-        WHERE u.id = $1
-          AND u.tenant_id = $2
-          AND u.active = true
-          AND t.active = true
-        "#,
-    )
-    .bind(session.1)
-    .bind(session.0)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(ApiError::internal)?
-    .ok_or_else(ApiError::unauthorized)?;
+    let user = load_current_user(&mut transaction, session.0, session.1, session.2.clone()).await?;
+    if user.is_admin() && !session.3 {
+        return Err(ApiError::unauthorized());
+    }
     sqlx::query("UPDATE sessions SET last_seen_at = now() WHERE token_hash = $1")
         .bind(token_hash(&token))
         .execute(&mut *transaction)
@@ -615,16 +886,7 @@ pub async fn authenticate(state: &AppState, headers: &HeaderMap) -> ApiResult<Cu
         .map_err(ApiError::internal)?;
     transaction.commit().await.map_err(ApiError::internal)?;
 
-    Ok(CurrentUser {
-        id: user.0,
-        tenant_id: user.1,
-        tenant_slug: user.2,
-        tenant_name: user.3,
-        email: user.4,
-        display_name: user.5,
-        role: user.6,
-        csrf_token: session.2,
-    })
+    Ok(user)
 }
 
 pub fn require_csrf(headers: &HeaderMap, user: &CurrentUser) -> ApiResult<()> {
@@ -705,6 +967,7 @@ async fn create_session(
     state: &AppState,
     tenant_id: Uuid,
     user_id: Uuid,
+    mfa_verified: bool,
 ) -> ApiResult<(String, String)> {
     let token = random_token();
     let csrf_token = Uuid::new_v4().to_string();
@@ -712,8 +975,8 @@ async fn create_session(
     sqlx::query(
         r#"
         INSERT INTO sessions
-            (id, tenant_id, user_id, token_hash, csrf_token, expires_at)
-        VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6))
+            (id, tenant_id, user_id, token_hash, csrf_token, expires_at, mfa_verified)
+        VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6), $7)
         "#,
     )
     .bind(Uuid::now_v7())
@@ -722,6 +985,7 @@ async fn create_session(
     .bind(token_hash(&token))
     .bind(&csrf_token)
     .bind(state.session_ttl_seconds as f64)
+    .bind(mfa_verified)
     .execute(&mut **transaction)
     .await
     .map_err(ApiError::internal)?;
@@ -729,18 +993,257 @@ async fn create_session(
     Ok((token, csrf_token))
 }
 
-fn auth_response(state: &AppState, session_token: String, user: CurrentUser) -> Response {
+fn auth_flow_response(state: &AppState, session_token: String, user: CurrentUser) -> Response {
+    auth_flow_response_with_recovery_codes(state, session_token, user, None)
+}
+
+fn auth_flow_response_with_recovery_codes(
+    state: &AppState,
+    session_token: String,
+    user: CurrentUser,
+    recovery_codes: Option<Vec<String>>,
+) -> Response {
     let secure = if state.cookie_secure { "; Secure" } else { "" };
     let cookie = format!(
         "{SESSION_COOKIE}={session_token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{secure}",
         state.session_ttl_seconds
     );
-    let mut response = Json(AuthResponse { user }).into_response();
+    let mut response = Json(AuthFlowResponse {
+        status: "authenticated".to_owned(),
+        user: Some(user),
+        challenge_token: None,
+        secret: None,
+        provisioning_uri: None,
+        recovery_codes,
+    })
+    .into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
         HeaderValue::from_str(&cookie).expect("session cookie contains valid header characters"),
     );
     response
+}
+
+async fn create_mfa_setup_challenge(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &AppState,
+    tenant_id: Uuid,
+    user_id: Uuid,
+    email: &str,
+    tenant_name: &str,
+) -> ApiResult<AuthFlowResponse> {
+    let secret = mfa::generate_secret();
+    let encrypted = mfa::encrypt_secret(&state.mfa_encryption_key, &secret)?;
+    let token = create_mfa_challenge(
+        transaction,
+        state,
+        tenant_id,
+        user_id,
+        "setup",
+        Some(encrypted),
+    )
+    .await?;
+    Ok(AuthFlowResponse {
+        status: "mfa_setup_required".to_owned(),
+        user: None,
+        challenge_token: Some(token),
+        secret: Some(mfa::encode_secret(&secret)),
+        provisioning_uri: Some(mfa::provisioning_uri(&secret, email, tenant_name)),
+        recovery_codes: None,
+    })
+}
+
+async fn create_mfa_verify_challenge(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &AppState,
+    tenant_id: Uuid,
+    user_id: Uuid,
+) -> ApiResult<AuthFlowResponse> {
+    let token =
+        create_mfa_challenge(transaction, state, tenant_id, user_id, "verify", None).await?;
+    Ok(AuthFlowResponse {
+        status: "mfa_required".to_owned(),
+        user: None,
+        challenge_token: Some(token),
+        secret: None,
+        provisioning_uri: None,
+        recovery_codes: None,
+    })
+}
+
+async fn create_mfa_challenge(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &AppState,
+    tenant_id: Uuid,
+    user_id: Uuid,
+    purpose: &str,
+    secret_encrypted: Option<Vec<u8>>,
+) -> ApiResult<String> {
+    sqlx::query("DELETE FROM user_mfa_challenges WHERE user_id = $1 OR expires_at <= now()")
+        .bind(user_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(ApiError::internal)?;
+    let token = mfa::challenge_token(tenant_id);
+    sqlx::query(
+        r#"
+        INSERT INTO user_mfa_challenges
+            (id, tenant_id, user_id, token_hash, purpose, secret_encrypted, expires_at)
+        VALUES ($1, $2, $3, $4, $5, $6, now() + make_interval(secs => $7))
+        "#,
+    )
+    .bind(Uuid::now_v7())
+    .bind(tenant_id)
+    .bind(user_id)
+    .bind(token_hash(&token))
+    .bind(purpose)
+    .bind(secret_encrypted)
+    .bind(state.mfa_challenge_ttl_seconds as f64)
+    .execute(&mut **transaction)
+    .await
+    .map_err(ApiError::internal)?;
+    Ok(token)
+}
+
+async fn verify_mfa_code(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &AppState,
+    tenant_id: Uuid,
+    user_id: Uuid,
+    encrypted_secret: Option<&[u8]>,
+    code: &str,
+) -> ApiResult<bool> {
+    let code = code.trim();
+    if let Some(encrypted) = encrypted_secret {
+        let secret = mfa::decrypt_secret(&state.mfa_encryption_key, encrypted)?;
+        if mfa::verify_totp(&secret, code) {
+            return Ok(true);
+        }
+    }
+
+    let normalized = mfa::normalize_recovery_code(code);
+    if normalized.len() < 8 {
+        return Ok(false);
+    }
+    let used = sqlx::query(
+        r#"
+        UPDATE user_mfa_recovery_codes
+        SET used_at = now()
+        WHERE tenant_id = $1 AND user_id = $2 AND code_hash = $3 AND used_at IS NULL
+        "#,
+    )
+    .bind(tenant_id)
+    .bind(user_id)
+    .bind(token_hash(&normalized))
+    .execute(&mut **transaction)
+    .await
+    .map_err(ApiError::internal)?;
+    Ok(used.rows_affected() == 1)
+}
+
+async fn record_mfa_failure(
+    transaction: &mut Transaction<'_, Postgres>,
+    tenant_id: Uuid,
+    user_id: Uuid,
+) -> ApiResult<()> {
+    sqlx::query(
+        r#"
+        UPDATE users
+        SET
+            failed_login_count = failed_login_count + 1,
+            locked_until = CASE
+                WHEN failed_login_count + 1 >= 5 THEN now() + interval '15 minutes'
+                ELSE locked_until
+            END,
+            updated_at = now()
+        WHERE id = $1 AND tenant_id = $2
+        "#,
+    )
+    .bind(user_id)
+    .bind(tenant_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(ApiError::internal)?;
+    Ok(())
+}
+
+async fn load_current_user(
+    transaction: &mut Transaction<'_, Postgres>,
+    tenant_id: Uuid,
+    user_id: Uuid,
+    csrf_token: String,
+) -> ApiResult<CurrentUser> {
+    let user = sqlx::query_as::<_, (Uuid, Uuid, String, String, String, String, String, bool)>(
+        r#"
+        SELECT
+            u.id,
+            u.tenant_id,
+            t.slug,
+            t.name,
+            u.email,
+            u.display_name,
+            u.role,
+            u.mfa_enabled_at IS NOT NULL
+        FROM users u
+        JOIN tenants t ON t.id = u.tenant_id
+        WHERE u.id = $1
+          AND u.tenant_id = $2
+          AND u.active = true
+          AND t.active = true
+        "#,
+    )
+    .bind(user_id)
+    .bind(tenant_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(ApiError::internal)?
+    .ok_or_else(ApiError::unauthorized)?;
+    Ok(CurrentUser {
+        id: user.0,
+        tenant_id: user.1,
+        tenant_slug: user.2,
+        tenant_name: user.3,
+        email: user.4,
+        display_name: user.5,
+        role: user.6,
+        mfa_enabled: user.7,
+        csrf_token,
+    })
+}
+
+fn current_user_from_login(user: LoginUser, csrf_token: String, mfa_enabled: bool) -> CurrentUser {
+    CurrentUser {
+        id: user.id,
+        tenant_id: user.tenant_id,
+        tenant_slug: user.tenant_slug,
+        tenant_name: user.tenant_name,
+        email: user.email,
+        display_name: user.display_name,
+        role: user.role,
+        mfa_enabled,
+        csrf_token,
+    }
+}
+
+fn challenge_tenant_id(token: &str) -> ApiResult<Uuid> {
+    token
+        .split_once('.')
+        .and_then(|(value, _)| Uuid::parse_str(value).ok())
+        .ok_or_else(invalid_mfa_challenge)
+}
+
+fn invalid_mfa_challenge() -> ApiError {
+    ApiError::unauthorized_with(
+        "INVALID_MFA_CHALLENGE",
+        "MFA認証の有効期限が切れています。もう一度ログインしてください。",
+    )
+}
+
+fn invalid_mfa_code() -> ApiError {
+    ApiError::unauthorized_with(
+        "INVALID_MFA_CODE",
+        "認証コードまたはリカバリーコードが正しくありません。",
+    )
 }
 
 fn session_cookie(headers: &HeaderMap) -> Option<String> {

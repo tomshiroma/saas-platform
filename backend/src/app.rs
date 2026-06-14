@@ -15,8 +15,8 @@ use utoipa::{OpenApi, ToSchema};
 
 use crate::{
     auth::{
-        self, AuthResponse, LoginRequest, PasswordResetConfirmRequest, PasswordResetRequest,
-        PasswordResetResponse, RegisterRequest,
+        self, AuthFlowResponse, AuthResponse, LoginRequest, MfaCodeRequest, MfaResetRequest,
+        PasswordResetConfirmRequest, PasswordResetRequest, PasswordResetResponse, RegisterRequest,
     },
     billing::{
         self, BillingStatusResponse, CreateCheckoutRequest, InvoiceResponse, StripeRedirectResponse,
@@ -47,6 +47,9 @@ struct HealthResponse {
         ready,
         auth::register,
         auth::login,
+        auth::confirm_mfa_setup,
+        auth::verify_mfa,
+        auth::reset_mfa,
         auth::request_password_reset,
         auth::confirm_password_reset,
         auth::me,
@@ -82,6 +85,9 @@ struct HealthResponse {
         PasswordResetConfirmRequest,
         PasswordResetResponse,
         AuthResponse,
+        AuthFlowResponse,
+        MfaCodeRequest,
+        MfaResetRequest,
         PlatformLoginRequest,
         PlatformAuthResponse,
         PlatformSummaryResponse,
@@ -113,6 +119,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/openapi.json", get(openapi))
         .route("/api/v1/auth/register", post(auth::register))
         .route("/api/v1/auth/login", post(auth::login))
+        .route(
+            "/api/v1/auth/mfa/setup/confirm",
+            post(auth::confirm_mfa_setup),
+        )
+        .route("/api/v1/auth/mfa/verify", post(auth::verify_mfa))
+        .route("/api/v1/auth/mfa/reset", post(auth::reset_mfa))
         .route(
             "/api/v1/auth/password-reset/request",
             post(auth::request_password_reset),

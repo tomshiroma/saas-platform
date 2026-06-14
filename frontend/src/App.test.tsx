@@ -41,6 +41,7 @@ describe("App", () => {
             email: "admin@example.test",
             display_name: "開発管理者",
             role: "admin",
+            mfa_enabled: true,
             csrf_token: "csrf",
           },
         }),
