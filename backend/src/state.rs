@@ -1,7 +1,7 @@
 use anyhow::Result;
 use sqlx::PgPool;
 
-use crate::{config::Config, email::EmailSender};
+use crate::{config::Config, email::EmailSender, stripe::StripeClient};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -10,6 +10,8 @@ pub struct AppState {
     pub password_reset_ttl_seconds: i64,
     pub cookie_secure: bool,
     pub email_sender: EmailSender,
+    pub app_base_url: String,
+    pub stripe: StripeClient,
 }
 
 impl AppState {
@@ -20,6 +22,8 @@ impl AppState {
             password_reset_ttl_seconds: config.password_reset_ttl_seconds,
             cookie_secure: config.cookie_secure,
             email_sender: EmailSender::new(config)?,
+            app_base_url: config.app_base_url.trim_end_matches('/').to_owned(),
+            stripe: StripeClient::new(config),
         })
     }
 }

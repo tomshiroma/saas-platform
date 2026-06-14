@@ -36,6 +36,7 @@ import {
   type PlatformSummary,
   type PlatformTenant,
 } from "./api";
+import { PlatformPlanManagement } from "./PlatformPlanManagement";
 
 const platformLoginSchema = z.object({
   email: z.email("メールアドレスを入力してください。"),
@@ -207,6 +208,7 @@ function PlatformConsole({
             </Typography>
           </Box>
           <SummaryCards summary={summary} />
+          <PlatformPlanManagement admin={admin} />
           <TenantManagement admin={admin} tenants={tenants} />
           <AuditLogList auditLogs={auditLogs} />
         </Stack>

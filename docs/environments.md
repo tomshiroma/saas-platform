@@ -90,6 +90,8 @@ Rustの自動再ビルドには`cargo-watch`または同等ツールを開発sta
 - 開発用CookieはHTTP localhostで動作する設定とし、本番では必ず`Secure`を有効化する。
 - 開発用パスワードや鍵を検証・本番環境へ流用しない。
 - パスワード再設定URLの公開ベースURL、トークン有効期限、SMTP接続先、送信元を環境変数で設定する。
+- Stripe秘密鍵とWebhook署名シークレットは環境ごとに分離し、開発・検証ではStripe sandboxの値だけを使用する。
+- Stripe WebhookはStripe CLIまたはsandboxのWebhook EndpointからローカルAPIへ転送し、署名検証を省略しない。
 - 外部サービスはsandbox、モック、Mailpit、MinIOを優先し、意図しない課金や外部送信を防ぐ。
 - ログには開発環境でもパスワード、トークン、個人情報を出力しない。
 

@@ -1,10 +1,12 @@
 mod app;
 mod auth;
+mod billing;
 mod config;
 mod email;
 mod error;
 mod platform;
 mod state;
+mod stripe;
 mod tenant;
 
 use anyhow::{Context, Result};

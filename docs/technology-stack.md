@@ -111,6 +111,9 @@ flowchart TD
 - 管理者接続元を固定IPまたはVPNへ制限する。
 - SaaS運営管理画面は顧客向け画面と認証セッションを分離し、TOTP MFAを必須とする。
 - テナント停止時は対象テナントの全セッションと未使用パスワード再設定トークンを失効する。
+- サブスクリプション決済はStripe Billing、Stripe Checkout、Customer Portalを使用する。
+- プランはアプリDBとStripe Product/Priceを対応付ける。Stripe Priceは変更せず、料金改定時は新しいPriceを作成する。
+- 契約状態はブラウザからの申告ではなく、署名検証済みStripe Webhookを正として反映する。
 - PostgreSQLをインターネットへ公開しない。
 - OSとコンテナイメージへ定期的にセキュリティ更新を適用する。
 - 秘密情報をGit、Dockerイメージ、Composeファイルへ埋め込まない。

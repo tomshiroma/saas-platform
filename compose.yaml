@@ -54,6 +54,9 @@ services:
       SMTP_HOST: ${SMTP_HOST:-mailpit}
       SMTP_PORT: ${SMTP_PORT:-1025}
       SMTP_FROM: ${SMTP_FROM:-SaaS Platform <no-reply@example.test>}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_API_BASE_URL: ${STRIPE_API_BASE_URL:-https://api.stripe.com}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -68,6 +71,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+      start_period: 180s
     networks:
       - backend
 

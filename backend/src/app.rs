@@ -18,9 +18,11 @@ use crate::{
         self, AuthResponse, LoginRequest, PasswordResetConfirmRequest, PasswordResetRequest,
         PasswordResetResponse, RegisterRequest,
     },
+    billing::{self, BillingStatusResponse, CreateCheckoutRequest, StripeRedirectResponse},
     platform::{
-        self, PlatformAuditLogResponse, PlatformAuthResponse, PlatformLoginRequest,
-        PlatformSummaryResponse, PlatformTenantResponse, UpdatePlatformTenantRequest,
+        self, BillingPlanResponse, CreateBillingPlanRequest, PlatformAuditLogResponse,
+        PlatformAuthResponse, PlatformLoginRequest, PlatformSummaryResponse,
+        PlatformTenantResponse, UpdateBillingPlanRequest, UpdatePlatformTenantRequest,
     },
     state::AppState,
     tenant::{
@@ -54,6 +56,14 @@ struct HealthResponse {
         platform::list_tenants,
         platform::update_tenant,
         platform::audit_logs,
+        platform::list_plans,
+        platform::create_plan,
+        platform::update_plan,
+        billing::list_plans,
+        billing::status,
+        billing::create_checkout,
+        billing::create_portal,
+        billing::stripe_webhook_openapi,
         tenant::get_tenant,
         tenant::update_tenant,
         tenant::list_users,
@@ -75,6 +85,12 @@ struct HealthResponse {
         PlatformTenantResponse,
         UpdatePlatformTenantRequest,
         PlatformAuditLogResponse,
+        BillingPlanResponse,
+        CreateBillingPlanRequest,
+        UpdateBillingPlanRequest,
+        BillingStatusResponse,
+        CreateCheckoutRequest,
+        StripeRedirectResponse,
         TenantResponse,
         UpdateTenantRequest,
         UserResponse,
@@ -113,6 +129,19 @@ pub fn router(state: AppState) -> Router {
             patch(platform::update_tenant),
         )
         .route("/api/v1/platform/audit-logs", get(platform::audit_logs))
+        .route(
+            "/api/v1/platform/plans",
+            get(platform::list_plans).post(platform::create_plan),
+        )
+        .route(
+            "/api/v1/platform/plans/{plan_id}",
+            patch(platform::update_plan),
+        )
+        .route("/api/v1/billing/plans", get(billing::list_plans))
+        .route("/api/v1/billing/status", get(billing::status))
+        .route("/api/v1/billing/checkout", post(billing::create_checkout))
+        .route("/api/v1/billing/portal", post(billing::create_portal))
+        .route("/api/v1/stripe/webhook", post(billing::stripe_webhook))
         .route(
             "/api/v1/tenant",
             get(tenant::get_tenant).patch(tenant::update_tenant),

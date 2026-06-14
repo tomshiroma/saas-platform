@@ -51,6 +51,10 @@ impl ApiError {
         Self::new(StatusCode::TOO_MANY_REQUESTS, code, message)
     }
 
+    pub fn service_unavailable(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, code, message)
+    }
+
     pub fn internal(error: impl std::fmt::Display) -> Self {
         tracing::error!(%error, "internal API error");
         Self::new(

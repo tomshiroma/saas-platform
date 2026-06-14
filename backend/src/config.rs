@@ -10,6 +10,9 @@ pub struct Config {
     pub smtp_host: String,
     pub smtp_port: u16,
     pub smtp_from: String,
+    pub stripe_secret_key: String,
+    pub stripe_webhook_secret: String,
+    pub stripe_api_base_url: String,
 }
 impl Config {
     pub fn from_env() -> Result<Self> {
@@ -40,6 +43,10 @@ impl Config {
             .context("SMTP_PORT must be a valid u16")?;
         let smtp_from = std::env::var("SMTP_FROM")
             .unwrap_or_else(|_| "SaaS Platform <no-reply@example.test>".to_owned());
+        let stripe_secret_key = std::env::var("STRIPE_SECRET_KEY").unwrap_or_default();
+        let stripe_webhook_secret = std::env::var("STRIPE_WEBHOOK_SECRET").unwrap_or_default();
+        let stripe_api_base_url = std::env::var("STRIPE_API_BASE_URL")
+            .unwrap_or_else(|_| "https://api.stripe.com".to_owned());
 
         Ok(Self {
             database_url,
@@ -51,6 +58,9 @@ impl Config {
             smtp_host,
             smtp_port,
             smtp_from,
+            stripe_secret_key,
+            stripe_webhook_secret,
+            stripe_api_base_url,
         })
     }
 }

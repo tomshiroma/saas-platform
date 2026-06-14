@@ -81,6 +81,38 @@ pub struct PlatformAuditLogResponse {
     pub created_at: String,
 }
 
+#[derive(Serialize, sqlx::FromRow, ToSchema)]
+pub struct BillingPlanResponse {
+    pub id: Uuid,
+    pub code: String,
+    pub name: String,
+    pub description: String,
+    pub currency: String,
+    pub unit_amount: i64,
+    pub billing_interval: String,
+    pub active: bool,
+    pub stripe_product_id: String,
+    pub stripe_price_id: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct CreateBillingPlanRequest {
+    pub code: String,
+    pub name: String,
+    pub description: String,
+    pub unit_amount: i64,
+    pub billing_interval: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct UpdateBillingPlanRequest {
+    pub name: String,
+    pub description: String,
+    pub unit_amount: i64,
+    pub billing_interval: String,
+    pub active: bool,
+}
+
 #[derive(sqlx::FromRow)]
 struct PlatformLoginAdmin {
     id: Uuid,
@@ -433,7 +465,224 @@ pub async fn audit_logs(
     Ok(Json(logs))
 }
 
-async fn authenticate(state: &AppState, headers: &HeaderMap) -> ApiResult<CurrentPlatformAdmin> {
+#[utoipa::path(
+    get,
+    path = "/api/v1/platform/plans",
+    responses((status = 200, description = "Billing plans", body = [BillingPlanResponse]))
+)]
+pub async fn list_plans(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Vec<BillingPlanResponse>>> {
+    authenticate(&state, &headers).await?;
+    Ok(Json(load_plans(&state).await?))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/platform/plans",
+    request_body = CreateBillingPlanRequest,
+    responses((status = 201, description = "Billing plan created", body = BillingPlanResponse))
+)]
+pub async fn create_plan(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateBillingPlanRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let admin = authenticate(&state, &headers).await?;
+    require_csrf(&headers, &admin)?;
+    ensure_stripe_configured(&state)?;
+    let code = validate_plan_code(&request.code)?;
+    let name = validate_plan_text(&request.name, "プラン名", 100, false)?;
+    let description = validate_plan_text(&request.description, "説明", 500, true)?;
+    let interval = validate_billing_interval(&request.billing_interval)?;
+    validate_unit_amount(request.unit_amount)?;
+    let code_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM billing_plans WHERE code = $1)",
+    )
+    .bind(&code)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(ApiError::internal)?;
+    if code_exists {
+        return Err(ApiError::conflict(
+            "BILLING_PLAN_CODE_EXISTS",
+            "このプランコードは既に使用されています。",
+        ));
+    }
+    let plan_id = Uuid::now_v7();
+
+    let product = state
+        .stripe
+        .create_product(&name, &description, plan_id)
+        .await
+        .map_err(stripe_error)?;
+    let price = state
+        .stripe
+        .create_price(&product.id, request.unit_amount, &interval, plan_id)
+        .await
+        .map_err(stripe_error)?;
+
+    let mut transaction = state.pool.begin().await.map_err(ApiError::internal)?;
+    let plan = sqlx::query_as::<_, BillingPlanResponse>(
+        r#"
+        INSERT INTO billing_plans
+            (id, code, name, description, unit_amount, billing_interval,
+             stripe_product_id, stripe_price_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING
+            id, code, name, description, currency, unit_amount,
+            billing_interval, active, stripe_product_id, stripe_price_id
+        "#,
+    )
+    .bind(plan_id)
+    .bind(code)
+    .bind(name)
+    .bind(description)
+    .bind(request.unit_amount)
+    .bind(interval)
+    .bind(product.id)
+    .bind(price.id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?;
+    write_platform_audit(
+        &mut transaction,
+        admin.id,
+        "billing_plan.create",
+        "billing_plan",
+        Some(plan_id),
+        json!({ "code": plan.code, "stripe_price_id": plan.stripe_price_id }),
+    )
+    .await?;
+    transaction.commit().await.map_err(ApiError::internal)?;
+    Ok((axum::http::StatusCode::CREATED, Json(plan)))
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/v1/platform/plans/{plan_id}",
+    params(("plan_id" = Uuid, Path, description = "Billing plan ID")),
+    request_body = UpdateBillingPlanRequest,
+    responses((status = 200, description = "Billing plan updated", body = BillingPlanResponse))
+)]
+pub async fn update_plan(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(plan_id): Path<Uuid>,
+    Json(request): Json<UpdateBillingPlanRequest>,
+) -> ApiResult<Json<BillingPlanResponse>> {
+    let admin = authenticate(&state, &headers).await?;
+    require_csrf(&headers, &admin)?;
+    ensure_stripe_configured(&state)?;
+    let name = validate_plan_text(&request.name, "プラン名", 100, false)?;
+    let description = validate_plan_text(&request.description, "説明", 500, true)?;
+    let interval = validate_billing_interval(&request.billing_interval)?;
+    validate_unit_amount(request.unit_amount)?;
+    let existing = sqlx::query_as::<_, BillingPlanResponse>(
+        r#"
+        SELECT
+            id, code, name, description, currency, unit_amount,
+            billing_interval, active, stripe_product_id, stripe_price_id
+        FROM billing_plans
+        WHERE id = $1
+        "#,
+    )
+    .bind(plan_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(ApiError::internal)?
+    .ok_or_else(|| ApiError::not_found("プランが見つかりません。"))?;
+
+    state
+        .stripe
+        .update_product(
+            &existing.stripe_product_id,
+            &name,
+            &description,
+            request.active,
+        )
+        .await
+        .map_err(stripe_error)?;
+
+    let price_changed =
+        existing.unit_amount != request.unit_amount || existing.billing_interval != interval;
+    let stripe_price_id = if price_changed {
+        let price = state
+            .stripe
+            .create_price(
+                &existing.stripe_product_id,
+                request.unit_amount,
+                &interval,
+                plan_id,
+            )
+            .await
+            .map_err(stripe_error)?;
+        state
+            .stripe
+            .set_price_active(&existing.stripe_price_id, false)
+            .await
+            .map_err(stripe_error)?;
+        price.id
+    } else {
+        state
+            .stripe
+            .set_price_active(&existing.stripe_price_id, request.active)
+            .await
+            .map_err(stripe_error)?;
+        existing.stripe_price_id
+    };
+
+    let mut transaction = state.pool.begin().await.map_err(ApiError::internal)?;
+    let plan = sqlx::query_as::<_, BillingPlanResponse>(
+        r#"
+        UPDATE billing_plans
+        SET
+            name = $1,
+            description = $2,
+            unit_amount = $3,
+            billing_interval = $4,
+            active = $5,
+            stripe_price_id = $6,
+            updated_at = now()
+        WHERE id = $7
+        RETURNING
+            id, code, name, description, currency, unit_amount,
+            billing_interval, active, stripe_product_id, stripe_price_id
+        "#,
+    )
+    .bind(name)
+    .bind(description)
+    .bind(request.unit_amount)
+    .bind(interval)
+    .bind(request.active)
+    .bind(stripe_price_id)
+    .bind(plan_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?;
+    write_platform_audit(
+        &mut transaction,
+        admin.id,
+        "billing_plan.update",
+        "billing_plan",
+        Some(plan_id),
+        json!({
+            "active": plan.active,
+            "unit_amount": plan.unit_amount,
+            "billing_interval": plan.billing_interval,
+            "stripe_price_id": plan.stripe_price_id,
+        }),
+    )
+    .await?;
+    transaction.commit().await.map_err(ApiError::internal)?;
+    Ok(Json(plan))
+}
+
+pub async fn authenticate(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> ApiResult<CurrentPlatformAdmin> {
     let token = session_cookie(headers).ok_or_else(ApiError::unauthorized)?;
     let admin = sqlx::query_as::<_, (Uuid, String, String, String)>(
         r#"
@@ -513,7 +762,7 @@ async fn load_tenants(state: &AppState) -> ApiResult<Vec<PlatformTenantResponse>
     Ok(tenants)
 }
 
-async fn write_platform_audit(
+pub async fn write_platform_audit(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     actor_admin_id: Uuid,
     action: &str,
@@ -540,7 +789,7 @@ async fn write_platform_audit(
     Ok(())
 }
 
-fn require_csrf(headers: &HeaderMap, admin: &CurrentPlatformAdmin) -> ApiResult<()> {
+pub fn require_csrf(headers: &HeaderMap, admin: &CurrentPlatformAdmin) -> ApiResult<()> {
     let supplied = headers
         .get("x-csrf-token")
         .and_then(|value| value.to_str().ok());
@@ -548,6 +797,99 @@ fn require_csrf(headers: &HeaderMap, admin: &CurrentPlatformAdmin) -> ApiResult<
         Ok(())
     } else {
         Err(ApiError::forbidden("CSRFトークンが不正です。"))
+    }
+}
+
+async fn load_plans(state: &AppState) -> ApiResult<Vec<BillingPlanResponse>> {
+    sqlx::query_as::<_, BillingPlanResponse>(
+        r#"
+        SELECT
+            id, code, name, description, currency, unit_amount,
+            billing_interval, active, stripe_product_id, stripe_price_id
+        FROM billing_plans
+        ORDER BY unit_amount ASC, created_at ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(ApiError::internal)
+}
+
+fn validate_plan_code(value: &str) -> ApiResult<String> {
+    let value = value.trim().to_ascii_lowercase();
+    let valid = (2..=50).contains(&value.len())
+        && value.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        })
+        && !value.starts_with('-')
+        && !value.ends_with('-');
+    if valid {
+        Ok(value)
+    } else {
+        Err(ApiError::bad_request(
+            "INVALID_PLAN_CODE",
+            "プランコードは2～50文字の英小文字、数字、ハイフンで入力してください。",
+        ))
+    }
+}
+
+fn validate_plan_text(
+    value: &str,
+    label: &str,
+    max_length: usize,
+    allow_empty: bool,
+) -> ApiResult<String> {
+    let value = value.trim();
+    if (!allow_empty && value.is_empty()) || value.chars().count() > max_length {
+        Err(ApiError::bad_request(
+            "INVALID_PLAN",
+            format!(
+                "{label}は{}～{max_length}文字で入力してください。",
+                if allow_empty { 0 } else { 1 }
+            ),
+        ))
+    } else {
+        Ok(value.to_owned())
+    }
+}
+
+fn validate_billing_interval(value: &str) -> ApiResult<String> {
+    match value {
+        "month" | "year" => Ok(value.to_owned()),
+        _ => Err(ApiError::bad_request(
+            "INVALID_BILLING_INTERVAL",
+            "請求間隔はmonthまたはyearを指定してください。",
+        )),
+    }
+}
+
+fn validate_unit_amount(value: i64) -> ApiResult<()> {
+    if (1..=100_000_000).contains(&value) {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(
+            "INVALID_UNIT_AMOUNT",
+            "料金は1～100,000,000円で指定してください。",
+        ))
+    }
+}
+
+fn stripe_error(error: anyhow::Error) -> ApiError {
+    tracing::error!(%error, "Stripe operation failed");
+    ApiError::service_unavailable(
+        "STRIPE_UNAVAILABLE",
+        "Stripeとの連携に失敗しました。時間をおいて再試行してください。",
+    )
+}
+
+fn ensure_stripe_configured(state: &AppState) -> ApiResult<()> {
+    if state.stripe.is_configured() {
+        Ok(())
+    } else {
+        Err(ApiError::service_unavailable(
+            "STRIPE_NOT_CONFIGURED",
+            "Stripeが設定されていません。",
+        ))
     }
 }
 

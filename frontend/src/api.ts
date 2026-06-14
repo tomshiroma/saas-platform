@@ -95,6 +95,36 @@ export type PlatformAuditLog = {
   created_at: string;
 };
 
+export type BillingInterval = "month" | "year";
+
+export type BillingPlan = {
+  id: string;
+  code: string;
+  name: string;
+  description: string;
+  currency: "jpy";
+  unit_amount: number;
+  billing_interval: BillingInterval;
+  active: boolean;
+  stripe_product_id: string;
+  stripe_price_id: string;
+};
+
+export type CreateBillingPlanInput = Pick<
+  BillingPlan,
+  "code" | "name" | "description" | "unit_amount" | "billing_interval"
+>;
+
+export type BillingStatus = {
+  plan: BillingPlan | null;
+  status: string | null;
+  current_period_end: string | null;
+  cancel_at_period_end: boolean;
+  unit_amount: number | null;
+  billing_interval: BillingInterval | null;
+  stripe_configured: boolean;
+};
+
 type AuthResponse = {
   user: CurrentUser;
 };
@@ -241,4 +271,39 @@ export const api = {
     ),
   platformAuditLogs: () =>
     request<PlatformAuditLog[]>("/v1/platform/audit-logs"),
+  platformPlans: () =>
+    request<BillingPlan[]>("/v1/platform/plans"),
+  createPlatformPlan: (
+    input: CreateBillingPlanInput,
+    csrfToken: string,
+  ) =>
+    request<BillingPlan>(
+      "/v1/platform/plans",
+      { method: "POST", body: JSON.stringify(input) },
+      csrfToken,
+    ),
+  updatePlatformPlan: (
+    planId: string,
+    input: Omit<CreateBillingPlanInput, "code"> & { active: boolean },
+    csrfToken: string,
+  ) =>
+    request<BillingPlan>(
+      `/v1/platform/plans/${planId}`,
+      { method: "PATCH", body: JSON.stringify(input) },
+      csrfToken,
+    ),
+  billingPlans: () => request<BillingPlan[]>("/v1/billing/plans"),
+  billingStatus: () => request<BillingStatus>("/v1/billing/status"),
+  createCheckout: (planId: string, csrfToken: string) =>
+    request<{ url: string }>(
+      "/v1/billing/checkout",
+      { method: "POST", body: JSON.stringify({ plan_id: planId }) },
+      csrfToken,
+    ),
+  createBillingPortal: (csrfToken: string) =>
+    request<{ url: string }>(
+      "/v1/billing/portal",
+      { method: "POST" },
+      csrfToken,
+    ),
 };

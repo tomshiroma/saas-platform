@@ -54,7 +54,13 @@ describe("App", () => {
     renderApp();
 
     expect(await screen.findByRole("heading", { name: "ダッシュボード" })).toBeInTheDocument();
-    expect(screen.getByText("開発管理者 さんとしてログインしています。")).toBeInTheDocument();
+    expect(screen.getByText("開発管理者 さん、おかえりなさい。")).toBeInTheDocument();
+    expect(
+      screen.getByRole("navigation", { name: "メインナビゲーション" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("link", { name: /ダッシュボード/ })[0],
+    ).toHaveAttribute("aria-current", "page");
   });
 });
 
@@ -71,4 +77,3 @@ function renderApp() {
     </QueryClientProvider>,
   );
 }
-

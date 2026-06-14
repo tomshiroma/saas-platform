@@ -56,6 +56,9 @@ describe("PlatformPage", () => {
       if (url.endsWith("/v1/platform/tenants")) {
         return jsonResponse([]);
       }
+      if (url.endsWith("/v1/platform/plans")) {
+        return jsonResponse([]);
+      }
       if (url.endsWith("/v1/platform/audit-logs")) {
         return jsonResponse([]);
       }

@@ -42,6 +42,19 @@ make dev
 - PostgreSQL RLSによるテナントデータ分離
 - MFA付きSaaS運営管理画面
 - 全テナントの利用状況確認、停止・再開、運営監査ログ
+- Stripeと同期する課金プラン管理
+- Stripe Checkout、Customer Portal、Webhookによる契約管理
+
+Stripe Billingを利用する場合は、`.env`へテスト環境の
+`STRIPE_SECRET_KEY`と`STRIPE_WEBHOOK_SECRET`を設定します。Webhook URLは
+`/api/v1/stripe/webhook`で、次のイベントを購読します。
+
+- `checkout.session.completed`
+- `customer.subscription.created`
+- `customer.subscription.updated`
+- `customer.subscription.deleted`
+
+Stripe APIバージョンは`2026-05-27.dahlia`へ固定しています。
 
 MinIOを含めて起動する場合は`make dev-tools`を使用します。
 
