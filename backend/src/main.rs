@@ -1,6 +1,7 @@
 mod app;
 mod auth;
 mod config;
+mod email;
 mod error;
 mod state;
 mod tenant;
@@ -115,7 +116,7 @@ async fn serve(config: Config, pool: PgPool) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&address)
         .await
         .with_context(|| format!("failed to bind to {address}"))?;
-    let state = AppState::new(pool, &config);
+    let state = AppState::new(pool, &config)?;
     let router = app::router(state);
 
     info!(%address, "API server started");

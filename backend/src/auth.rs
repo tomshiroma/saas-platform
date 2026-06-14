@@ -57,10 +57,30 @@ pub struct LoginRequest {
     pub password: String,
 }
 
+#[derive(Deserialize, ToSchema)]
+pub struct PasswordResetRequest {
+    pub tenant_slug: String,
+    pub email: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct PasswordResetConfirmRequest {
+    pub token: String,
+    pub password: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct PasswordResetResponse {
+    pub message: &'static str,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct AuthResponse {
     pub user: CurrentUser,
 }
+
+const PASSWORD_RESET_RESPONSE: &str =
+    "入力された情報に一致するアカウントがある場合、再設定メールを送信しました。";
 
 #[derive(sqlx::FromRow)]
 struct LoginUser {
@@ -292,6 +312,228 @@ pub async fn login(
 }
 
 #[utoipa::path(
+    post,
+    path = "/api/v1/auth/password-reset/request",
+    request_body = PasswordResetRequest,
+    responses((status = 202, description = "Password reset request accepted", body = PasswordResetResponse))
+)]
+pub async fn request_password_reset(
+    State(state): State<AppState>,
+    Json(request): Json<PasswordResetRequest>,
+) -> ApiResult<(axum::http::StatusCode, Json<PasswordResetResponse>)> {
+    let tenant_slug = normalize_slug(&request.tenant_slug)?;
+    let email = normalize_email(&request.email)?;
+    let mut transaction = state.pool.begin().await.map_err(ApiError::internal)?;
+
+    let tenant =
+        sqlx::query_as::<_, (Uuid, String)>("SELECT id, name FROM tenants WHERE slug = $1")
+            .bind(&tenant_slug)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(ApiError::internal)?;
+
+    let Some((tenant_id, tenant_name)) = tenant else {
+        return Ok(password_reset_accepted());
+    };
+
+    set_tenant_context(&mut transaction, tenant_id).await?;
+    let user_id = sqlx::query_scalar::<_, Uuid>(
+        r#"
+        SELECT id
+        FROM users
+        WHERE tenant_id = $1 AND lower(email) = lower($2) AND active = true
+        "#,
+    )
+    .bind(tenant_id)
+    .bind(&email)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?;
+
+    let Some(user_id) = user_id else {
+        return Ok(password_reset_accepted());
+    };
+
+    let recently_requested = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM password_reset_tokens
+            WHERE user_id = $1
+              AND used_at IS NULL
+              AND created_at > now() - interval '1 minute'
+        )
+        "#,
+    )
+    .bind(user_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?;
+
+    if recently_requested {
+        return Ok(password_reset_accepted());
+    }
+
+    sqlx::query(
+        "UPDATE password_reset_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL",
+    )
+    .bind(user_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?;
+
+    let token = password_reset_token(tenant_id);
+    sqlx::query(
+        r#"
+        INSERT INTO password_reset_tokens
+            (id, tenant_id, user_id, token_hash, expires_at)
+        VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5))
+        "#,
+    )
+    .bind(Uuid::now_v7())
+    .bind(tenant_id)
+    .bind(user_id)
+    .bind(token_hash(&token))
+    .bind(state.password_reset_ttl_seconds as f64)
+    .execute(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?;
+
+    write_audit(
+        &mut transaction,
+        tenant_id,
+        user_id,
+        "auth.password_reset_requested",
+        "user",
+        Some(user_id),
+    )
+    .await?;
+    transaction.commit().await.map_err(ApiError::internal)?;
+
+    if let Err(error) = state
+        .email_sender
+        .send_password_reset(&email, &tenant_name, &token)
+        .await
+    {
+        tracing::error!(%error, %user_id, "failed to send password reset email");
+    }
+
+    Ok(password_reset_accepted())
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/password-reset/confirm",
+    request_body = PasswordResetConfirmRequest,
+    responses(
+        (status = 204, description = "Password reset completed"),
+        (status = 400, description = "Token is invalid or expired")
+    )
+)]
+pub async fn confirm_password_reset(
+    State(state): State<AppState>,
+    Json(request): Json<PasswordResetConfirmRequest>,
+) -> ApiResult<axum::http::StatusCode> {
+    let token = request.token.trim();
+    if !(32..=128).contains(&token.len()) {
+        return Err(invalid_reset_token());
+    }
+    validate_password(&request.password)?;
+    let password_hash = hash_password(request.password).await?;
+
+    let tenant_id = token
+        .split_once('.')
+        .and_then(|(value, _)| Uuid::parse_str(value).ok())
+        .ok_or_else(invalid_reset_token)?;
+    let mut transaction = state.pool.begin().await.map_err(ApiError::internal)?;
+    set_tenant_context(&mut transaction, tenant_id).await?;
+
+    let reset = sqlx::query_as::<_, (Uuid, Uuid)>(
+        r#"
+        SELECT id, user_id
+        FROM password_reset_tokens
+        WHERE tenant_id = $1
+          AND token_hash = $2
+          AND used_at IS NULL
+          AND expires_at > now()
+        "#,
+    )
+    .bind(tenant_id)
+    .bind(token_hash(token))
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?
+    .ok_or_else(invalid_reset_token)?;
+
+    let claimed = sqlx::query(
+        r#"
+        UPDATE password_reset_tokens
+        SET used_at = now()
+        WHERE id = $1 AND used_at IS NULL AND expires_at > now()
+        "#,
+    )
+    .bind(reset.0)
+    .execute(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?;
+    if claimed.rows_affected() != 1 {
+        return Err(invalid_reset_token());
+    }
+
+    let updated = sqlx::query(
+        r#"
+        UPDATE users
+        SET
+            password_hash = $1,
+            failed_login_count = 0,
+            locked_until = NULL,
+            updated_at = now()
+        WHERE id = $2 AND tenant_id = $3 AND active = true
+        "#,
+    )
+    .bind(password_hash)
+    .bind(reset.1)
+    .bind(tenant_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?;
+    if updated.rows_affected() != 1 {
+        return Err(invalid_reset_token());
+    }
+
+    sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND tenant_id = $2")
+        .bind(reset.1)
+        .bind(tenant_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(ApiError::internal)?;
+    sqlx::query(
+        r#"
+        UPDATE password_reset_tokens
+        SET used_at = coalesce(used_at, now())
+        WHERE user_id = $1 AND id <> $2
+        "#,
+    )
+    .bind(reset.1)
+    .bind(reset.0)
+    .execute(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?;
+    write_audit(
+        &mut transaction,
+        tenant_id,
+        reset.1,
+        "auth.password_reset",
+        "user",
+        Some(reset.1),
+    )
+    .await?;
+    transaction.commit().await.map_err(ApiError::internal)?;
+
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
     get,
     path = "/api/v1/auth/me",
     responses((status = 200, description = "Current session", body = AuthResponse))
@@ -459,9 +701,7 @@ async fn create_session(
     tenant_id: Uuid,
     user_id: Uuid,
 ) -> ApiResult<(String, String)> {
-    let mut token_bytes = [0_u8; 32];
-    rand::thread_rng().fill_bytes(&mut token_bytes);
-    let token = URL_SAFE_NO_PAD.encode(token_bytes);
+    let token = random_token();
     let csrf_token = Uuid::new_v4().to_string();
 
     sqlx::query(
@@ -511,6 +751,32 @@ fn session_cookie(headers: &HeaderMap) -> Option<String> {
 
 fn token_hash(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
+}
+
+fn random_token() -> String {
+    let mut token_bytes = [0_u8; 32];
+    rand::thread_rng().fill_bytes(&mut token_bytes);
+    URL_SAFE_NO_PAD.encode(token_bytes)
+}
+
+fn password_reset_token(tenant_id: Uuid) -> String {
+    format!("{tenant_id}.{}", random_token())
+}
+
+fn password_reset_accepted() -> (axum::http::StatusCode, Json<PasswordResetResponse>) {
+    (
+        axum::http::StatusCode::ACCEPTED,
+        Json(PasswordResetResponse {
+            message: PASSWORD_RESET_RESPONSE,
+        }),
+    )
+}
+
+fn invalid_reset_token() -> ApiError {
+    ApiError::bad_request(
+        "INVALID_RESET_TOKEN",
+        "再設定リンクが無効か、有効期限が切れています。もう一度申請してください。",
+    )
 }
 
 fn normalize_slug(value: &str) -> ApiResult<String> {

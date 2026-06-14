@@ -14,7 +14,10 @@ use tower_http::{
 use utoipa::{OpenApi, ToSchema};
 
 use crate::{
-    auth::{self, AuthResponse, LoginRequest, RegisterRequest},
+    auth::{
+        self, AuthResponse, LoginRequest, PasswordResetConfirmRequest, PasswordResetRequest,
+        PasswordResetResponse, RegisterRequest,
+    },
     state::AppState,
     tenant::{
         self, CreateUserRequest, TenantResponse, UpdateTenantRequest, UpdateUserRequest,
@@ -36,6 +39,8 @@ struct HealthResponse {
         ready,
         auth::register,
         auth::login,
+        auth::request_password_reset,
+        auth::confirm_password_reset,
         auth::me,
         auth::logout,
         tenant::get_tenant,
@@ -49,6 +54,9 @@ struct HealthResponse {
         HealthResponse,
         RegisterRequest,
         LoginRequest,
+        PasswordResetRequest,
+        PasswordResetConfirmRequest,
+        PasswordResetResponse,
         AuthResponse,
         TenantResponse,
         UpdateTenantRequest,
@@ -68,6 +76,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/openapi.json", get(openapi))
         .route("/api/v1/auth/register", post(auth::register))
         .route("/api/v1/auth/login", post(auth::login))
+        .route(
+            "/api/v1/auth/password-reset/request",
+            post(auth::request_password_reset),
+        )
+        .route(
+            "/api/v1/auth/password-reset/confirm",
+            post(auth::confirm_password_reset),
+        )
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/auth/logout", post(auth::logout))
         .route(

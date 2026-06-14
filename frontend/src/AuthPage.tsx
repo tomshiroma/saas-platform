@@ -6,6 +6,7 @@ import {
   Card,
   CardContent,
   Container,
+  Divider,
   Stack,
   Tab,
   Tabs,
@@ -14,6 +15,7 @@ import {
 } from "@mui/material";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { z } from "zod";
 import { ApiError, api, type CurrentUser } from "./api";
 
@@ -31,15 +33,41 @@ const registerSchema = loginSchema.extend({
   display_name: z.string().trim().min(1, "表示名を入力してください。").max(100),
 });
 
+const passwordResetRequestSchema = loginSchema.pick({
+  tenant_slug: true,
+  email: true,
+});
+
+const passwordResetConfirmSchema = z
+  .object({
+    password: z.string().min(12, "12文字以上で入力してください。").max(128),
+    password_confirmation: z.string(),
+  })
+  .refine((values) => values.password === values.password_confirmation, {
+    message: "確認用パスワードが一致しません。",
+    path: ["password_confirmation"],
+  });
+
 type LoginValues = z.infer<typeof loginSchema>;
 type RegisterValues = z.infer<typeof registerSchema>;
+type PasswordResetRequestValues = z.infer<
+  typeof passwordResetRequestSchema
+>;
+type PasswordResetConfirmValues = z.infer<
+  typeof passwordResetConfirmSchema
+>;
 
 type AuthPageProps = {
   onAuthenticated: (user: CurrentUser) => void;
 };
 
 export function AuthPage({ onAuthenticated }: AuthPageProps) {
-  const [tab, setTab] = useState<"login" | "register">("login");
+  const [searchParams] = useSearchParams();
+  const resetToken = searchParams.get("token");
+  const [view, setView] = useState<"login" | "register" | "forgot">(
+    "login",
+  );
+  const showResetForm = resetToken !== null;
 
   return (
     <Container component="main" maxWidth="sm" sx={{ py: 8 }}>
@@ -49,39 +77,57 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
             SaaS Platform
           </Typography>
           <Typography color="text.secondary">
-            テナントIDを指定してログインしてください。
+            {showResetForm
+              ? "新しいパスワードを設定してください。"
+              : "テナントIDを指定してログインしてください。"}
           </Typography>
         </Box>
 
         <Card>
-          <Tabs
-            value={tab}
-            onChange={(_, value: "login" | "register") => setTab(value)}
-            variant="fullWidth"
-          >
-            <Tab value="login" label="ログイン" />
-            <Tab value="register" label="新規登録" />
-          </Tabs>
+          {!showResetForm && view !== "forgot" && (
+            <Tabs
+              value={view}
+              onChange={(_, value: "login" | "register") => setView(value)}
+              variant="fullWidth"
+            >
+              <Tab value="login" label="ログイン" />
+              <Tab value="register" label="新規登録" />
+            </Tabs>
+          )}
           <CardContent>
-            {tab === "login" ? (
-              <LoginForm onAuthenticated={onAuthenticated} />
-            ) : (
+            {showResetForm ? (
+              <PasswordResetConfirmForm token={resetToken} />
+            ) : view === "login" ? (
+              <LoginForm
+                onAuthenticated={onAuthenticated}
+                onForgotPassword={() => setView("forgot")}
+              />
+            ) : view === "register" ? (
               <RegisterForm onAuthenticated={onAuthenticated} />
+            ) : (
+              <PasswordResetRequestForm
+                onBack={() => setView("login")}
+              />
             )}
           </CardContent>
         </Card>
 
-        <Alert severity="info">
-          開発用: テナントID <strong>development</strong>、メールアドレス{" "}
-          <strong>admin@example.test</strong>、パスワード{" "}
-          <strong>development-password</strong>
-        </Alert>
+        {!showResetForm && (
+          <Alert severity="info">
+            開発用: テナントID <strong>development</strong>、メールアドレス{" "}
+            <strong>admin@example.test</strong>、パスワード{" "}
+            <strong>development-password</strong>
+          </Alert>
+        )}
       </Stack>
     </Container>
   );
 }
 
-function LoginForm({ onAuthenticated }: AuthPageProps) {
+function LoginForm({
+  onAuthenticated,
+  onForgotPassword,
+}: AuthPageProps & { onForgotPassword: () => void }) {
   const [error, setError] = useState<string>();
   const {
     register,
@@ -134,6 +180,139 @@ function LoginForm({ onAuthenticated }: AuthPageProps) {
       />
       <Button type="submit" variant="contained" disabled={isSubmitting}>
         {isSubmitting ? "ログイン中..." : "ログイン"}
+      </Button>
+      <Divider />
+      <Button type="button" onClick={onForgotPassword}>
+        パスワードをお忘れの方
+      </Button>
+    </Stack>
+  );
+}
+
+function PasswordResetRequestForm({ onBack }: { onBack: () => void }) {
+  const [error, setError] = useState<string>();
+  const [message, setMessage] = useState<string>();
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<PasswordResetRequestValues>({
+    resolver: zodResolver(passwordResetRequestSchema),
+    defaultValues: {
+      tenant_slug: "development",
+      email: "admin@example.test",
+    },
+  });
+
+  const submit = handleSubmit(async (values) => {
+    setError(undefined);
+    setMessage(undefined);
+    try {
+      const response = await api.requestPasswordReset(values);
+      setMessage(response.message);
+    } catch (cause) {
+      setError(errorMessage(cause));
+    }
+  });
+
+  return (
+    <Stack component="form" spacing={2} onSubmit={submit} noValidate>
+      <Typography component="h2" variant="h5">
+        パスワード再設定
+      </Typography>
+      <Typography color="text.secondary">
+        登録済みのテナントIDとメールアドレスを入力してください。
+      </Typography>
+      {error !== undefined && <Alert severity="error">{error}</Alert>}
+      {message !== undefined && <Alert severity="success">{message}</Alert>}
+      <TextField
+        label="テナントID"
+        autoComplete="organization"
+        error={errors.tenant_slug !== undefined}
+        helperText={errors.tenant_slug?.message}
+        {...register("tenant_slug")}
+      />
+      <TextField
+        label="メールアドレス"
+        type="email"
+        autoComplete="username"
+        error={errors.email !== undefined}
+        helperText={errors.email?.message}
+        {...register("email")}
+      />
+      <Button type="submit" variant="contained" disabled={isSubmitting}>
+        {isSubmitting ? "送信中..." : "再設定メールを送信"}
+      </Button>
+      <Button type="button" onClick={onBack}>
+        ログインへ戻る
+      </Button>
+    </Stack>
+  );
+}
+
+function PasswordResetConfirmForm({ token }: { token: string }) {
+  const navigate = useNavigate();
+  const [error, setError] = useState<string>();
+  const [completed, setCompleted] = useState(false);
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<PasswordResetConfirmValues>({
+    resolver: zodResolver(passwordResetConfirmSchema),
+    defaultValues: {
+      password: "",
+      password_confirmation: "",
+    },
+  });
+
+  const submit = handleSubmit(async (values) => {
+    setError(undefined);
+    try {
+      await api.confirmPasswordReset({
+        token,
+        password: values.password,
+      });
+      setCompleted(true);
+    } catch (cause) {
+      setError(errorMessage(cause));
+    }
+  });
+
+  if (completed) {
+    return (
+      <Stack spacing={2}>
+        <Alert severity="success">
+          パスワードを変更しました。新しいパスワードでログインしてください。
+        </Alert>
+        <Button variant="contained" onClick={() => navigate("/", { replace: true })}>
+          ログインへ進む
+        </Button>
+      </Stack>
+    );
+  }
+
+  return (
+    <Stack component="form" spacing={2} onSubmit={submit} noValidate>
+      {error !== undefined && <Alert severity="error">{error}</Alert>}
+      <TextField
+        label="新しいパスワード"
+        type="password"
+        autoComplete="new-password"
+        error={errors.password !== undefined}
+        helperText={errors.password?.message ?? "12～128文字"}
+        {...register("password")}
+      />
+      <TextField
+        label="新しいパスワード（確認）"
+        type="password"
+        autoComplete="new-password"
+        error={errors.password_confirmation !== undefined}
+        helperText={errors.password_confirmation?.message}
+        {...register("password_confirmation")}
+      />
+      <Button type="submit" variant="contained" disabled={isSubmitting}>
+        {isSubmitting ? "変更中..." : "パスワードを変更"}
       </Button>
     </Stack>
   );
@@ -215,4 +394,3 @@ function RegisterForm({ onAuthenticated }: AuthPageProps) {
 function errorMessage(cause: unknown): string {
   return cause instanceof ApiError ? cause.message : "通信に失敗しました。";
 }
-

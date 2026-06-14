@@ -32,11 +32,11 @@ flowchart LR
 | `api` | Rust、Axum、Cargo | ソースをマウントし、変更時に自動再ビルドする |
 | `postgres` | PostgreSQL | named volumeへデータを保存する |
 | `migrate` | SQLx migration | 明示実行または初回起動時に一度だけ実行する |
-| `mailpit` | 開発用SMTP・メール確認 | 外部へメールを送信せずWeb UIで確認する |
+| `mailpit` | 開発用SMTP・メール確認 | 標準起動し、外部へメールを送信せずWeb UIで確認する |
 | `minio` | S3互換ストレージ | ファイル機能をローカルで検証する場合に使用する |
 | `e2e` | Playwright | 必要時にprofile指定で起動する |
 
-`mailpit`、`minio`、`e2e`はDocker Compose profilesで分離し、機能開発やテストで必要な場合だけ起動する。
+`mailpit`はパスワード再設定の標準依存サービスとして常時起動する。`minio`と`e2e`はDocker Compose profilesで分離し、機能開発やテストで必要な場合だけ起動する。
 
 ### 2.2 Compose構成
 
@@ -89,6 +89,7 @@ Rustの自動再ビルドには`cargo-watch`または同等ツールを開発sta
 - `.env.local`などの実値ファイルはGit管理対象外とする。
 - 開発用CookieはHTTP localhostで動作する設定とし、本番では必ず`Secure`を有効化する。
 - 開発用パスワードや鍵を検証・本番環境へ流用しない。
+- パスワード再設定URLの公開ベースURL、トークン有効期限、SMTP接続先、送信元を環境変数で設定する。
 - 外部サービスはsandbox、モック、Mailpit、MinIOを優先し、意図しない課金や外部送信を防ぐ。
 - ログには開発環境でもパスワード、トークン、個人情報を出力しない。
 
@@ -209,4 +210,3 @@ mainブランチで作成したコンテナイメージを、commit SHAまたは
 - 本番データが開発・検証環境へ無承認で複製されない。
 - 検証環境でmigration、スモークテスト、ロールバック手順を確認できる。
 - 環境ごとの秘密情報とアクセス権限が分離されている。
-

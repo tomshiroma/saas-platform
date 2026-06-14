@@ -76,7 +76,7 @@
 
 開発端末に必要なソフトウェアはGit、Docker EngineまたはDocker Desktop、Docker Composeのみとする。Node.js、pnpm、Rust、Cargo、PostgreSQLはコンテナ内で実行する。
 
-予定する標準サービスは`frontend`、`api`、`postgres`、`migrate`である。Mailpit、MinIO、Playwrightは必要時にCompose profileで起動する。
+標準サービスは`frontend`、`api`、`postgres`、`migrate`、`mailpit`である。MinIO、Playwrightは必要時にCompose profileで起動する。
 
 以下を標準コマンドとする。
 

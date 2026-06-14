@@ -36,6 +36,16 @@ export type RegisterInput = LoginInput & {
   display_name: string;
 };
 
+export type PasswordResetRequestInput = Pick<
+  LoginInput,
+  "tenant_slug" | "email"
+>;
+
+export type PasswordResetConfirmInput = {
+  token: string;
+  password: string;
+};
+
 export type CreateUserInput = {
   email: string;
   display_name: string;
@@ -111,6 +121,16 @@ export const api = {
     }),
   register: (input: RegisterInput) =>
     request<AuthResponse>("/v1/auth/register", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  requestPasswordReset: (input: PasswordResetRequestInput) =>
+    request<{ message: string }>("/v1/auth/password-reset/request", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  confirmPasswordReset: (input: PasswordResetConfirmInput) =>
+    request<void>("/v1/auth/password-reset/confirm", {
       method: "POST",
       body: JSON.stringify(input),
     }),

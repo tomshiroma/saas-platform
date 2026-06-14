@@ -11,19 +11,27 @@ import {
 } from "@mui/material";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Link, Navigate, Route, Routes } from "react-router-dom";
+import {
+  Link,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+} from "react-router-dom";
 import { api, type CurrentUser } from "./api";
 import { AuthPage } from "./AuthPage";
 import { TenantPage } from "./TenantPage";
 
 export function App() {
+  const location = useLocation();
+  const isPasswordReset = location.pathname === "/reset-password";
   const queryClient = useQueryClient();
   const [sessionUser, setSessionUser] = useState<CurrentUser>();
   const currentUser = useQuery({
     queryKey: ["current-user"],
     queryFn: api.me,
     retry: false,
-    enabled: sessionUser === undefined,
+    enabled: sessionUser === undefined && !isPasswordReset,
   });
 
   const user = sessionUser ?? currentUser.data?.user;
@@ -41,6 +49,10 @@ export function App() {
     setSessionUser(undefined);
     queryClient.clear();
   };
+
+  if (isPasswordReset) {
+    return <AuthPage onAuthenticated={setUser} />;
+  }
 
   if (currentUser.isPending && sessionUser === undefined) {
     return (
