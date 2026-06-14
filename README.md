@@ -14,6 +14,7 @@ make dev
 起動後は以下へアクセスできます。
 
 - Frontend: <http://localhost:5173>
+- SaaS運営管理: <http://localhost:5173/platform>
 - API health: <http://localhost:3000/api/v1/health/ready>
 - OpenAPI: <http://localhost:3000/api/v1/openapi.json>
 - Mailpit: <http://localhost:8025>
@@ -24,6 +25,12 @@ make dev
 - メールアドレス: `admin@example.test`
 - パスワード: `development-password`
 
+開発用SaaS運営管理者:
+
+- メールアドレス: `platform-admin@example.test`
+- パスワード: `platform-development-password`
+- TOTPシークレット: `JBSWY3DPEHPK3PXP`
+
 実装済みの初期機能:
 
 - テナント新規登録と初期管理者作成
@@ -33,6 +40,8 @@ make dev
 - 管理者によるテナント名変更
 - テナントメンバーの追加、権限変更、有効・無効化、削除
 - PostgreSQL RLSによるテナントデータ分離
+- MFA付きSaaS運営管理画面
+- 全テナントの利用状況確認、停止・再開、運営監査ログ
 
 MinIOを含めて起動する場合は`make dev-tools`を使用します。
 

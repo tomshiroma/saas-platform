@@ -18,6 +18,10 @@ use crate::{
         self, AuthResponse, LoginRequest, PasswordResetConfirmRequest, PasswordResetRequest,
         PasswordResetResponse, RegisterRequest,
     },
+    platform::{
+        self, PlatformAuditLogResponse, PlatformAuthResponse, PlatformLoginRequest,
+        PlatformSummaryResponse, PlatformTenantResponse, UpdatePlatformTenantRequest,
+    },
     state::AppState,
     tenant::{
         self, CreateUserRequest, TenantResponse, UpdateTenantRequest, UpdateUserRequest,
@@ -43,6 +47,13 @@ struct HealthResponse {
         auth::confirm_password_reset,
         auth::me,
         auth::logout,
+        platform::login,
+        platform::me,
+        platform::logout,
+        platform::summary,
+        platform::list_tenants,
+        platform::update_tenant,
+        platform::audit_logs,
         tenant::get_tenant,
         tenant::update_tenant,
         tenant::list_users,
@@ -58,6 +69,12 @@ struct HealthResponse {
         PasswordResetConfirmRequest,
         PasswordResetResponse,
         AuthResponse,
+        PlatformLoginRequest,
+        PlatformAuthResponse,
+        PlatformSummaryResponse,
+        PlatformTenantResponse,
+        UpdatePlatformTenantRequest,
+        PlatformAuditLogResponse,
         TenantResponse,
         UpdateTenantRequest,
         UserResponse,
@@ -86,6 +103,16 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/auth/logout", post(auth::logout))
+        .route("/api/v1/platform/auth/login", post(platform::login))
+        .route("/api/v1/platform/auth/me", get(platform::me))
+        .route("/api/v1/platform/auth/logout", post(platform::logout))
+        .route("/api/v1/platform/summary", get(platform::summary))
+        .route("/api/v1/platform/tenants", get(platform::list_tenants))
+        .route(
+            "/api/v1/platform/tenants/{tenant_id}",
+            patch(platform::update_tenant),
+        )
+        .route("/api/v1/platform/audit-logs", get(platform::audit_logs))
         .route(
             "/api/v1/tenant",
             get(tenant::get_tenant).patch(tenant::update_tenant),

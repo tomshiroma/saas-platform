@@ -197,13 +197,14 @@ pub async fn login(
     let email = normalize_email(&request.email)?;
     let mut transaction = state.pool.begin().await.map_err(ApiError::internal)?;
 
-    let tenant =
-        sqlx::query_as::<_, (Uuid, String)>("SELECT id, name FROM tenants WHERE slug = $1")
-            .bind(&tenant_slug)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(ApiError::internal)?
-            .ok_or_else(invalid_credentials)?;
+    let tenant = sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT id, name FROM tenants WHERE slug = $1 AND active = true",
+    )
+    .bind(&tenant_slug)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?
+    .ok_or_else(invalid_credentials)?;
 
     set_tenant_context(&mut transaction, tenant.0).await?;
     let user = sqlx::query_as::<_, LoginUser>(
@@ -325,12 +326,13 @@ pub async fn request_password_reset(
     let email = normalize_email(&request.email)?;
     let mut transaction = state.pool.begin().await.map_err(ApiError::internal)?;
 
-    let tenant =
-        sqlx::query_as::<_, (Uuid, String)>("SELECT id, name FROM tenants WHERE slug = $1")
-            .bind(&tenant_slug)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(ApiError::internal)?;
+    let tenant = sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT id, name FROM tenants WHERE slug = $1 AND active = true",
+    )
+    .bind(&tenant_slug)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?;
 
     let Some((tenant_id, tenant_name)) = tenant else {
         return Ok(password_reset_accepted());
@@ -594,7 +596,10 @@ pub async fn authenticate(state: &AppState, headers: &HeaderMap) -> ApiResult<Cu
         SELECT u.id, u.tenant_id, t.slug, t.name, u.email, u.display_name, u.role
         FROM users u
         JOIN tenants t ON t.id = u.tenant_id
-        WHERE u.id = $1 AND u.tenant_id = $2 AND u.active = true
+        WHERE u.id = $1
+          AND u.tenant_id = $2
+          AND u.active = true
+          AND t.active = true
         "#,
     )
     .bind(session.1)
@@ -684,7 +689,7 @@ pub async fn hash_password(password: String) -> ApiResult<String> {
     .map_err(ApiError::internal)?
 }
 
-async fn verify_password(password: String, hash: String) -> ApiResult<bool> {
+pub async fn verify_password(password: String, hash: String) -> ApiResult<bool> {
     tokio::task::spawn_blocking(move || {
         let parsed = PasswordHash::new(&hash).map_err(ApiError::internal)?;
         Ok(Argon2::default()
@@ -749,11 +754,11 @@ fn session_cookie(headers: &HeaderMap) -> Option<String> {
         .map(|(_, value)| value.to_owned())
 }
 
-fn token_hash(token: &str) -> Vec<u8> {
+pub fn token_hash(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
 }
 
-fn random_token() -> String {
+pub fn random_token() -> String {
     let mut token_bytes = [0_u8; 32];
     rand::thread_rng().fill_bytes(&mut token_bytes);
     URL_SAFE_NO_PAD.encode(token_bytes)

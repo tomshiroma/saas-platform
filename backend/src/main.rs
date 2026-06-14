@@ -3,6 +3,7 @@ mod auth;
 mod config;
 mod email;
 mod error;
+mod platform;
 mod state;
 mod tenant;
 
@@ -48,6 +49,7 @@ async fn migrate(pool: &PgPool) -> Result<()> {
 async fn seed(pool: &PgPool) -> Result<()> {
     const TENANT_ID: Uuid = Uuid::from_u128(0x018f_0000_0000_7000_8000_0000_0000_0001);
     const USER_ID: Uuid = Uuid::from_u128(0x018f_0000_0000_7000_8000_0000_0000_0002);
+    const PLATFORM_ADMIN_ID: Uuid = Uuid::from_u128(0x018f_0000_0000_7000_8000_0000_0000_0010);
 
     let mut transaction = pool
         .begin()
@@ -102,6 +104,34 @@ async fn seed(pool: &PgPool) -> Result<()> {
     .await
     .context("failed to seed user")?;
 
+    let platform_password_hash = auth::hash_password("platform-development-password".to_owned())
+        .await
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    sqlx::query(
+        r#"
+        INSERT INTO platform_admins
+            (id, email, display_name, password_hash, totp_secret)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (lower(email))
+        DO UPDATE SET
+            display_name = EXCLUDED.display_name,
+            password_hash = EXCLUDED.password_hash,
+            totp_secret = EXCLUDED.totp_secret,
+            active = true,
+            failed_login_count = 0,
+            locked_until = NULL,
+            updated_at = now()
+        "#,
+    )
+    .bind(PLATFORM_ADMIN_ID)
+    .bind("platform-admin@example.test")
+    .bind("SaaS運営管理者")
+    .bind(platform_password_hash)
+    .bind(hex_to_bytes("48656c6c6f21deadbeef")?)
+    .execute(&mut *transaction)
+    .await
+    .context("failed to seed platform administrator")?;
+
     transaction
         .commit()
         .await
@@ -109,6 +139,17 @@ async fn seed(pool: &PgPool) -> Result<()> {
 
     info!("development seed completed");
     Ok(())
+}
+
+fn hex_to_bytes(value: &str) -> Result<Vec<u8>> {
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let text = std::str::from_utf8(pair)?;
+            Ok(u8::from_str_radix(text, 16)?)
+        })
+        .collect()
 }
 
 async fn serve(config: Config, pool: PgPool) -> Result<()> {

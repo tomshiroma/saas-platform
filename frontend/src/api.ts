@@ -53,8 +53,54 @@ export type CreateUserInput = {
   password: string;
 };
 
+export type PlatformAdmin = {
+  id: string;
+  email: string;
+  display_name: string;
+  csrf_token: string;
+};
+
+export type PlatformLoginInput = {
+  email: string;
+  password: string;
+  totp_code: string;
+};
+
+export type PlatformSummary = {
+  tenant_count: number;
+  active_tenant_count: number;
+  suspended_tenant_count: number;
+  user_count: number;
+  active_user_count: number;
+};
+
+export type PlatformTenant = {
+  id: string;
+  slug: string;
+  name: string;
+  active: boolean;
+  suspension_reason?: string;
+  created_at: string;
+  user_count: number;
+  active_user_count: number;
+};
+
+export type PlatformAuditLog = {
+  id: string;
+  actor_display_name?: string;
+  action: string;
+  target_type: string;
+  target_id?: string;
+  details: Record<string, unknown>;
+  created_at: string;
+};
+
 type AuthResponse = {
   user: CurrentUser;
+};
+
+type PlatformAuthResponse = {
+  admin: PlatformAdmin;
 };
 
 type ApiErrorBody = {
@@ -166,4 +212,33 @@ export const api = {
       { method: "DELETE" },
       csrfToken,
     ),
+  platformMe: () =>
+    request<PlatformAuthResponse>("/v1/platform/auth/me"),
+  platformLogin: (input: PlatformLoginInput) =>
+    request<PlatformAuthResponse>("/v1/platform/auth/login", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  platformLogout: (csrfToken: string) =>
+    request<void>(
+      "/v1/platform/auth/logout",
+      { method: "POST" },
+      csrfToken,
+    ),
+  platformSummary: () =>
+    request<PlatformSummary>("/v1/platform/summary"),
+  platformTenants: () =>
+    request<PlatformTenant[]>("/v1/platform/tenants"),
+  updatePlatformTenant: (
+    tenantId: string,
+    input: Pick<PlatformTenant, "active" | "suspension_reason">,
+    csrfToken: string,
+  ) =>
+    request<PlatformTenant>(
+      `/v1/platform/tenants/${tenantId}`,
+      { method: "PATCH", body: JSON.stringify(input) },
+      csrfToken,
+    ),
+  platformAuditLogs: () =>
+    request<PlatformAuditLog[]>("/v1/platform/audit-logs"),
 };

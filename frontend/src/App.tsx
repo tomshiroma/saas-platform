@@ -10,7 +10,7 @@ import {
   Typography,
 } from "@mui/material";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import {
   Link,
   Navigate,
@@ -22,7 +22,25 @@ import { api, type CurrentUser } from "./api";
 import { AuthPage } from "./AuthPage";
 import { TenantPage } from "./TenantPage";
 
+const PlatformPage = lazy(() =>
+  import("./PlatformPage").then((module) => ({
+    default: module.PlatformPage,
+  })),
+);
+
 export function App() {
+  const location = useLocation();
+  if (location.pathname.startsWith("/platform")) {
+    return (
+      <Suspense fallback={<FullPageLoading />}>
+        <PlatformPage />
+      </Suspense>
+    );
+  }
+  return <CustomerApp />;
+}
+
+function CustomerApp() {
   const location = useLocation();
   const isPasswordReset = location.pathname === "/reset-password";
   const queryClient = useQueryClient();
@@ -120,6 +138,14 @@ function Dashboard({ currentUser }: { currentUser: CurrentUser }) {
       <Alert severity="success">
         認証済みです。権限: {currentUser.role === "admin" ? "管理者" : "一般"}
       </Alert>
+    </Stack>
+  );
+}
+
+function FullPageLoading() {
+  return (
+    <Stack sx={{ minHeight: "100vh", alignItems: "center", justifyContent: "center" }}>
+      <CircularProgress />
     </Stack>
   );
 }
