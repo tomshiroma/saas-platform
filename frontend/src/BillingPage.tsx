@@ -24,6 +24,12 @@ export function BillingPage({ currentUser }: { currentUser: CurrentUser }) {
     queryFn: api.billingStatus,
     refetchInterval: searchParams.get("checkout") === "success" ? 3000 : false,
   });
+  const invoices = useQuery({
+    queryKey: ["billing-invoices"],
+    queryFn: api.billingInvoices,
+    enabled:
+      currentUser.role === "admin" && status.data?.stripe_configured === true,
+  });
 
   if (currentUser.role !== "admin") {
     return <Alert severity="warning">契約管理には管理者権限が必要です。</Alert>;
@@ -48,8 +54,94 @@ export function BillingPage({ currentUser }: { currentUser: CurrentUser }) {
         <Alert severity="info">お申し込みはキャンセルされました。</Alert>
       )}
       <CurrentSubscription currentUser={currentUser} status={status} />
+      <InvoiceList
+        invoices={invoices}
+        stripeConfigured={status.data?.stripe_configured}
+      />
       <PlanList currentUser={currentUser} plans={plans} status={status} />
     </Stack>
+  );
+}
+
+function InvoiceList({
+  invoices,
+  stripeConfigured,
+}: {
+  invoices: ReturnType<
+    typeof useQuery<Awaited<ReturnType<typeof api.billingInvoices>>>
+  >;
+  stripeConfigured: boolean | undefined;
+}) {
+  return (
+    <Card>
+      <CardContent>
+        <Stack spacing={2}>
+          <Typography component="h2" variant="h5">
+            請求書
+          </Typography>
+          {stripeConfigured === undefined ? (
+            <CircularProgress />
+          ) : !stripeConfigured ? (
+            <Alert severity="info">
+              Stripeが設定されると請求書を確認できます。
+            </Alert>
+          ) : invoices.isPending ? (
+            <CircularProgress />
+          ) : invoices.isError ? (
+            <Alert severity="error">{errorMessage(invoices.error)}</Alert>
+          ) : invoices.data.length === 0 ? (
+            <Alert severity="info">請求書はありません。</Alert>
+          ) : (
+            <Stack divider={<Box sx={{ borderBottom: 1, borderColor: "divider" }} />}>
+              {invoices.data.map((invoice) => (
+                <Stack
+                  key={invoice.id}
+                  direction={{ xs: "column", sm: "row" }}
+                  spacing={2}
+                  sx={{
+                    py: 2,
+                    alignItems: { sm: "center" },
+                    "&:first-of-type": { pt: 0 },
+                    "&:last-of-type": { pb: 0 },
+                  }}
+                >
+                  <Box sx={{ flexGrow: 1 }}>
+                    <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                      <Typography sx={{ fontWeight: 700 }}>
+                        {invoice.number ?? invoice.id}
+                      </Typography>
+                      <Chip
+                        size="small"
+                        label={invoiceStatusLabel(invoice.status)}
+                      />
+                    </Stack>
+                    <Typography color="text.secondary" variant="body2">
+                      {formatInvoiceDate(invoice.created_at)} ・{" "}
+                      {formatCurrency(invoice.total, invoice.currency)}
+                    </Typography>
+                  </Box>
+                  {invoice.invoice_pdf === null ? (
+                    <Button variant="outlined" disabled>
+                      PDF未発行
+                    </Button>
+                  ) : (
+                    <Button
+                      component="a"
+                      href={invoice.invoice_pdf}
+                      target="_blank"
+                      rel="noreferrer"
+                      variant="outlined"
+                    >
+                      PDFをダウンロード
+                    </Button>
+                  )}
+                </Stack>
+              ))}
+            </Stack>
+          )}
+        </Stack>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -230,6 +322,31 @@ function formatDate(value: string): string {
     timeStyle: "short",
     timeZone: "Asia/Tokyo",
   }).format(new Date(value));
+}
+
+function formatInvoiceDate(value: number): string {
+  return new Intl.DateTimeFormat("ja-JP", {
+    dateStyle: "medium",
+    timeZone: "Asia/Tokyo",
+  }).format(new Date(value * 1000));
+}
+
+function formatCurrency(value: number, currency: string): string {
+  return new Intl.NumberFormat("ja-JP", {
+    style: "currency",
+    currency: currency.toUpperCase(),
+  }).format(value);
+}
+
+function invoiceStatusLabel(status: string | null): string {
+  const labels: Record<string, string> = {
+    draft: "下書き",
+    open: "未払い",
+    paid: "支払済み",
+    uncollectible: "回収不能",
+    void: "無効",
+  };
+  return status === null ? "不明" : (labels[status] ?? status);
 }
 
 function errorMessage(cause: unknown): string {

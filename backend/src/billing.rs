@@ -38,6 +38,17 @@ pub struct StripeRedirectResponse {
     pub url: String,
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct InvoiceResponse {
+    pub id: String,
+    pub number: Option<String>,
+    pub status: Option<String>,
+    pub total: i64,
+    pub currency: String,
+    pub created_at: i64,
+    pub invoice_pdf: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct StripeEvent {
     id: String,
@@ -312,6 +323,52 @@ pub async fn create_portal(
         .await
         .map_err(stripe_error)?;
     Ok(Json(StripeRedirectResponse { url: session.url }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/billing/invoices",
+    responses((status = 200, description = "Tenant invoices", body = [InvoiceResponse]))
+)]
+pub async fn list_invoices(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Vec<InvoiceResponse>>> {
+    let user = authenticate(&state, &headers).await?;
+    require_tenant_admin(&user)?;
+    ensure_stripe_configured(&state)?;
+
+    let mut transaction = state.pool.begin().await.map_err(ApiError::internal)?;
+    set_tenant_context(&mut transaction, user.tenant_id).await?;
+    let customer_id = sqlx::query_scalar::<_, String>(
+        "SELECT stripe_customer_id FROM tenant_subscriptions WHERE tenant_id = $1",
+    )
+    .bind(user.tenant_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(ApiError::internal)?;
+    transaction.commit().await.map_err(ApiError::internal)?;
+
+    let Some(customer_id) = customer_id else {
+        return Ok(Json(Vec::new()));
+    };
+    let invoices = state
+        .stripe
+        .list_invoices(&customer_id)
+        .await
+        .map_err(stripe_error)?
+        .into_iter()
+        .map(|invoice| InvoiceResponse {
+            id: invoice.id,
+            number: invoice.number,
+            status: invoice.status,
+            total: invoice.total,
+            currency: invoice.currency,
+            created_at: invoice.created,
+            invoice_pdf: invoice.invoice_pdf,
+        })
+        .collect();
+    Ok(Json(invoices))
 }
 
 pub async fn stripe_webhook(

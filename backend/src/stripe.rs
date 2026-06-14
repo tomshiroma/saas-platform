@@ -32,6 +32,22 @@ pub struct StripePortalSession {
     pub url: String,
 }
 
+#[derive(Deserialize)]
+pub struct StripeInvoiceList {
+    pub data: Vec<StripeInvoice>,
+}
+
+#[derive(Deserialize)]
+pub struct StripeInvoice {
+    pub id: String,
+    pub number: Option<String>,
+    pub status: Option<String>,
+    pub total: i64,
+    pub currency: String,
+    pub created: i64,
+    pub invoice_pdf: Option<String>,
+}
+
 impl StripeClient {
     pub fn new(config: &Config) -> Self {
         Self {
@@ -188,6 +204,39 @@ impl StripeClient {
         .await
     }
 
+    pub async fn list_invoices(&self, customer_id: &str) -> Result<Vec<StripeInvoice>> {
+        let invoices = self
+            .get::<StripeInvoiceList>(
+                "/v1/invoices",
+                vec![
+                    ("customer".to_owned(), customer_id.to_owned()),
+                    ("limit".to_owned(), "100".to_owned()),
+                ],
+            )
+            .await?;
+        Ok(invoices.data)
+    }
+
+    async fn get<T>(&self, path: &str, query: Vec<(String, String)>) -> Result<T>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
+        if !self.is_configured() {
+            bail!("STRIPE_SECRET_KEY is not configured");
+        }
+
+        let response = self
+            .client
+            .get(format!("{}{path}", self.api_base_url))
+            .bearer_auth(&self.secret_key)
+            .header("Stripe-Version", STRIPE_API_VERSION)
+            .query(&query)
+            .send()
+            .await
+            .context("Stripe request failed")?;
+        decode_response(response).await
+    }
+
     async fn post<T>(
         &self,
         path: &str,
@@ -212,23 +261,30 @@ impl StripeClient {
         }
 
         let response = request.send().await.context("Stripe request failed")?;
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .context("failed to read Stripe response")?;
-        if status != StatusCode::OK {
-            let message = serde_json::from_str::<Value>(&body)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .pointer("/error/message")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
-                .unwrap_or_else(|| format!("Stripe returned HTTP {status}"));
-            bail!("{message}");
-        }
-        serde_json::from_str(&body).context("failed to decode Stripe response")
+        decode_response(response).await
     }
+}
+
+async fn decode_response<T>(response: reqwest::Response) -> Result<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .context("failed to read Stripe response")?;
+    if status != StatusCode::OK {
+        let message = serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| format!("Stripe returned HTTP {status}"));
+        bail!("{message}");
+    }
+    serde_json::from_str(&body).context("failed to decode Stripe response")
 }

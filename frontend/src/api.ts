@@ -125,6 +125,16 @@ export type BillingStatus = {
   stripe_configured: boolean;
 };
 
+export type BillingInvoice = {
+  id: string;
+  number: string | null;
+  status: string | null;
+  total: number;
+  currency: string;
+  created_at: number;
+  invoice_pdf: string | null;
+};
+
 type AuthResponse = {
   user: CurrentUser;
 };
@@ -294,6 +304,8 @@ export const api = {
     ),
   billingPlans: () => request<BillingPlan[]>("/v1/billing/plans"),
   billingStatus: () => request<BillingStatus>("/v1/billing/status"),
+  billingInvoices: () =>
+    request<BillingInvoice[]>("/v1/billing/invoices"),
   createCheckout: (planId: string, csrfToken: string) =>
     request<{ url: string }>(
       "/v1/billing/checkout",

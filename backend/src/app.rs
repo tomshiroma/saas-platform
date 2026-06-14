@@ -18,7 +18,9 @@ use crate::{
         self, AuthResponse, LoginRequest, PasswordResetConfirmRequest, PasswordResetRequest,
         PasswordResetResponse, RegisterRequest,
     },
-    billing::{self, BillingStatusResponse, CreateCheckoutRequest, StripeRedirectResponse},
+    billing::{
+        self, BillingStatusResponse, CreateCheckoutRequest, InvoiceResponse, StripeRedirectResponse,
+    },
     platform::{
         self, BillingPlanResponse, CreateBillingPlanRequest, PlatformAuditLogResponse,
         PlatformAuthResponse, PlatformLoginRequest, PlatformSummaryResponse,
@@ -61,6 +63,7 @@ struct HealthResponse {
         platform::update_plan,
         billing::list_plans,
         billing::status,
+        billing::list_invoices,
         billing::create_checkout,
         billing::create_portal,
         billing::stripe_webhook_openapi,
@@ -89,6 +92,7 @@ struct HealthResponse {
         CreateBillingPlanRequest,
         UpdateBillingPlanRequest,
         BillingStatusResponse,
+        InvoiceResponse,
         CreateCheckoutRequest,
         StripeRedirectResponse,
         TenantResponse,
@@ -139,6 +143,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/billing/plans", get(billing::list_plans))
         .route("/api/v1/billing/status", get(billing::status))
+        .route("/api/v1/billing/invoices", get(billing::list_invoices))
         .route("/api/v1/billing/checkout", post(billing::create_checkout))
         .route("/api/v1/billing/portal", post(billing::create_portal))
         .route("/api/v1/stripe/webhook", post(billing::stripe_webhook))

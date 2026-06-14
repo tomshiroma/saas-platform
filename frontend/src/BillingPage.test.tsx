@@ -40,6 +40,19 @@ describe("BillingPage", () => {
           stripe_configured: true,
         });
       }
+      if (url.endsWith("/v1/billing/invoices")) {
+        return jsonResponse([
+          {
+            id: "in_test",
+            number: "INV-0001",
+            status: "paid",
+            total: 3000,
+            currency: "jpy",
+            created_at: 1767225600,
+            invoice_pdf: "https://pay.stripe.com/invoice/test/pdf",
+          },
+        ]);
+      }
       return new Response(null, { status: 404 });
     });
 
@@ -55,6 +68,10 @@ describe("BillingPage", () => {
     expect(
       screen.getByText("契約中の有料プランはありません。"),
     ).toBeInTheDocument();
+    expect(await screen.findByText("INV-0001")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "PDFをダウンロード" }),
+    ).toHaveAttribute("href", "https://pay.stripe.com/invoice/test/pdf");
   });
 });
 
